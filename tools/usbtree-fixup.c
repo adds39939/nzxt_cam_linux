@@ -28,6 +28,11 @@
 #include <stdlib.h>
 #include <wchar.h>
 
+/* Wide format strings use %ls, never %s: in a wide format MSVC's CRT reads %s as a
+ * wide string while mingw's C99 printf reads it as a narrow one, so %s silently
+ * produces one-character garbage when built against a different CRT. That is not
+ * only cosmetic here -- these strings build registry paths. %ls is wide under both. */
+
 #define ENUM_USB L"SYSTEM\\CurrentControlSet\\Enum\\USB"
 /* DEVPKEY_Device_Parent / _Children live under Properties\{fmtid}\{pid} */
 #define PROP_FMTID  L"{4340A6C5-93FA-4706-972C-7B648008A5A7}"
@@ -62,7 +67,7 @@ static void add_node( const WCHAR *device, const WCHAR *instance )
     n = &nodes[node_count++];
     wcscpy( n->device, device );
     wcscpy( n->instance, instance );
-    swprintf( n->id, ARRAYSIZE(n->id), L"USB\\%s\\%s", device, instance );
+    swprintf( n->id, ARRAYSIZE(n->id), L"USB\\%ls\\%ls", device, instance );
 }
 
 /* "VID_1E71&PID_3012&MI_01" -> "VID_1E71&PID_3012", or NULL if not an interface */
@@ -82,7 +87,7 @@ static LONG set_prop( const WCHAR *id, const WCHAR *pid, DWORD type, const void 
     HKEY key;
     LONG err;
 
-    swprintf( path, ARRAYSIZE(path), L"%s\\%s\\Properties\\%s\\%s",
+    swprintf( path, ARRAYSIZE(path), L"%ls\\%ls\\Properties\\%ls\\%ls",
               L"SYSTEM\\CurrentControlSet\\Enum", id, PROP_FMTID, pid );
     if ((err = RegCreateKeyExW( HKEY_LOCAL_MACHINE, path, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL )))
         return err;
@@ -164,7 +169,7 @@ int wmain( int argc, WCHAR **argv )
             if (set_prop( nodes[j].id, PID_PARENT, DEVPROP_TYPE_STRING,
                           composite->id, (wcslen( composite->id ) + 1) * sizeof(WCHAR) ))
                 continue;
-            if (verbose) wprintf( L"  %s\n    parent -> %s\n", nodes[j].id, composite->id );
+            if (verbose) wprintf( L"  %ls\n    parent -> %ls\n", nodes[j].id, composite->id );
             fixed++;
 
             if (clen + wcslen( nodes[j].id ) + 2 < ARRAYSIZE(children))
@@ -187,12 +192,12 @@ int wmain( int argc, WCHAR **argv )
             WCHAR path[1024];
             HKEY key;
 
-            swprintf( path, ARRAYSIZE(path), L"SYSTEM\\CurrentControlSet\\Enum\\%s", composite->id );
+            swprintf( path, ARRAYSIZE(path), L"SYSTEM\\CurrentControlSet\\Enum\\%ls", composite->id );
             if (!RegOpenKeyExW( HKEY_LOCAL_MACHINE, path, 0, KEY_SET_VALUE, &key ))
             {
                 RegSetValueExW( key, L"Address", 0, REG_DWORD, (const BYTE *)&port, sizeof(port) );
                 RegCloseKey( key );
-                if (verbose) wprintf( L"  %s\n    port   -> %lu\n", composite->id, port );
+                if (verbose) wprintf( L"  %ls\n    port   -> %lu\n", composite->id, port );
             }
         }
     }

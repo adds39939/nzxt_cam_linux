@@ -53,6 +53,32 @@ if [ -d "$PREFIX" ]; then
 fi
 [ -f "$LAUNCHER" ] && { FOUND=1; echo "    found launcher: $LAUNCHER"; }
 
+# The launcher supervises CAM and restarts it after a crash, so a running instance
+# has to be stopped before anything is removed -- otherwise it can put CAM back
+# halfway through the removal.
+# Matching on the launcher's path also matches this script's own command line, and
+# anything that merely mentions it, so never take pgrep's word for it: drop ourselves,
+# our parent, and any process whose command line is not actually the launcher.
+launcher_pids() {
+    local pid cmd
+    command -v pgrep >/dev/null 2>&1 || return 0
+    for pid in $(pgrep -f "$LAUNCHER" 2>/dev/null); do
+        [ "$pid" = "$$" ] && continue
+        [ "$pid" = "$PPID" ] && continue
+        cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" || continue
+        case "$cmd" in
+            *uninstall*) continue ;;                 # this script
+            *"$LAUNCHER"*) printf '%s\n' "$pid" ;;   # a real launcher
+        esac
+    done
+}
+
+RUNNING="$(launcher_pids | wc -l)"
+if [ "$RUNNING" -gt 0 ] 2>/dev/null; then
+    FOUND=1
+    echo "    found $RUNNING running launcher process(es)"
+fi
+
 # Menu entries and icons that Wine's menu builder generated. These live in shared XDG
 # directories next to every other application, so they cannot be removed a directory at
 # a time -- but nothing here is a fixed list either: entries are discovered, by what
@@ -118,6 +144,7 @@ fi
 say "This will remove"
 [ "$PREFIX_OK" -eq 1 ] && echo "    $PREFIX   (CAM, its settings, profiles and logs)"
 [ -f "$LAUNCHER" ]     && echo "    $LAUNCHER"
+[ "$RUNNING" -gt 0 ] 2>/dev/null && echo "    $RUNNING running launcher process(es) will be stopped"
 for f in "${DESKTOP_DIRS[@]:-}";  do [ -n "$f" ] && echo "    $f/   (whole directory)"; done
 for f in "${DESKTOP_ITEMS[@]:-}"; do [ -n "$f" ] && echo "    $f"; done
 if [ ${#DRIVER_BACKUPS[@]} -gt 0 ] && [ -z "${KEEP_DRIVERS:-}" ]; then
@@ -127,6 +154,13 @@ echo
 confirm "    Go ahead?" || die "aborted, nothing was removed"
 
 # ------------------------------------------------------------------------ remove
+
+if [ "$RUNNING" -gt 0 ] 2>/dev/null; then
+    say "Stopping the launcher"
+    for pid in $(launcher_pids); do kill "$pid" 2>/dev/null || true; done
+    sleep 2
+    for pid in $(launcher_pids); do kill -9 "$pid" 2>/dev/null || true; done
+fi
 
 if [ "$PREFIX_OK" -eq 1 ]; then
     say "Stopping anything still running in the prefix"

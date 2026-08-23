@@ -640,12 +640,31 @@ off CAM's own UI:
 NVIDIA exposes no hwmon node, so the shim cannot read the GPU directly the way it
 reads `k10temp`; the launcher refreshes `nvidia-smi` output into a small file instead.
 
-One piece is a genuine patch rather than a fix: before attaching sensors, `cam_helper`
-looks for a GPU record whose `+0x38` field is 1. That field comes from adapter data
-Wine does not provide and stays 0, so the shim NOPs the branch. It finds it by
-signature (`cmpl $0x1,0x38(%rax,%r15,1)` followed by `jne`) and only patches on a
-single unambiguous match, so a CAM update that moves the code disables the patch
-rather than corrupting something else.
+One piece cannot be fixed at the Wine level, and it is worth being precise about
+why. Each GPU entry `cam_helper` builds carries an SDK-linkage pair: a flag at
+`+0x38`, set to 1 once the entry has been paired with a CPUID SDK GPU device, and
+that device's ordinal at `+0x3c`. Before attaching readings it looks for the entry
+whose flag is 1 and whose ordinal matches the class-`0x20` device it is on.
+
+Under Wine that flag is never set. A hardware watchpoint on the field shows nothing
+ever writes it, and the whole SDK-derived half of the entry (its first `0x58` bytes,
+including the fan slot the pass itself later fills) stays zero. The linkage comes
+from the SDK's own GPU enumeration, which cannot exist without the driver -- so
+there is no missing Wine call to implement. The pairing has to come from us.
+
+The shim therefore relaxes the flag test to accept the value the field actually has,
+by changing one immediate byte, rather than deleting the branch:
+
+```
+42 83 7c 38 38 01   cmpl $0x1,0x38(%rax,%r15,1)     <- the 01 becomes 00
+75 xx               jne  <next entry>
+```
+
+The ordinal comparison at `+0x3c` still runs, so entries are still paired one to one
+and a second GPU cannot be handed the first one's readings -- which removing the
+branch would have risked. It is found by signature and applied only on a single
+unambiguous match, so a CAM update that moves the code disables the change instead
+of corrupting something else.
 
 The shim also serves `KMTQAITYPE_ADAPTERADDRESS`, which Wine's
 `D3DKMTQueryAdapterInfo` does not implement, from the PCI address fix #21 wrote.
@@ -670,11 +689,10 @@ nothing here makes capture work.
 - **GPU fan speed.** Left deliberately unreported: CAM's field is RPM and
   `nvidia-smi` only exposes a percentage (`fan.speed.rpm` is not a queryable field),
   so there is nothing honest to put there. Everything else on the GPU works.
-- **The GPU record match** is forced rather than satisfied (fix #22). `cam_helper`
-  requires a field in its own GPU record to equal 1 before it will attach sensor data;
-  that field is derived from adapter data Wine does not supply and stays 0. The shim
-  neutralises the branch, located by signature. Finding what actually feeds that field
-  would let the patch go away.
+- **The GPU SDK linkage** is supplied by the shim rather than by CAM (fix #22). This
+  one is not a missing Wine feature: the field comes from the SDK's own GPU
+  enumeration, which needs the driver, so nothing writes it here. Confirmed with a
+  hardware watchpoint.
 - **Motherboard fans and temperatures.** Second driver (`cam_driver_mb.sys`), reached
   through the same SDK; the sensor getter (`ac2b5856`) is decoded but the fan class
   (`0x3000`) is served off the mainboard device, which is DMI-only here.

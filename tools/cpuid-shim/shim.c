@@ -135,18 +135,30 @@ static void read_gpu( struct gpu_readings *out )
 
 /* ---- CAM's GPU record match ------------------------------------------------
  *
- * cam_helper only attaches SDK sensor data to a GPU once it finds a record whose
- * "+0x38" field equals 1. That field is derived from adapter data Wine does not
- * supply, and stays 0 here, so the match never happens and every GPU reading is
- * n/a even though the GPU itself is detected. Neutralise that one branch.
+ * Each GPU entry cam_helper builds has an SDK-linkage pair: a flag at +0x38 that
+ * is 1 once the entry has been paired with a CPUID SDK GPU device, and that
+ * device's ordinal at +0x3c. Before attaching sensor readings it looks for the
+ * entry whose flag is 1 and whose ordinal matches the class-0x20 device it is
+ * currently on.
  *
- * Located by signature rather than by address so a CAM update moving the code
- * does not silently patch something else; patched only on an unambiguous match.
+ * Under Wine the flag is never set -- a hardware watchpoint on the field shows
+ * nothing writes it, and the whole SDK-derived half of the entry stays zero --
+ * because the linkage comes from the SDK's own GPU enumeration, which cannot
+ * exist without the driver. There is nothing to fix at the Wine level: the
+ * pairing has to come from us.
  *
- *   42 83 7c 38 38 01   cmpl $0x1,0x38(%rax,%r15,1)
- *   75 xx               jne  <next record>
+ * So relax the flag test to accept the value the field actually has, rather than
+ * removing the test. The ordinal comparison at +0x3c still runs, so entries are
+ * still paired one-to-one and a second GPU cannot be given the first one's
+ * readings -- which is what deleting the branch would have risked.
+ *
+ *   42 83 7c 38 38 01   cmpl $0x1,0x38(%rax,%r15,1)     <- the 01 becomes 00
+ *   75 xx               jne  <next entry>
+ *
+ * Found by signature, and applied only on a single unambiguous match, so a CAM
+ * update that moves this code disables the change instead of corrupting something.
  */
-static void allow_gpu_record_match(void)
+static void accept_unlinked_gpu_entries(void)
 {
     static const unsigned char sig[] = { 0x42, 0x83, 0x7c, 0x38, 0x38, 0x01, 0x75 };
     IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)GetModuleHandleA( NULL );
@@ -171,24 +183,23 @@ static void allow_gpu_record_match(void)
         for (off = 0; off + sizeof(sig) < sec->Misc.VirtualSize; off++)
         {
             if (memcmp( base + off, sig, sizeof(sig) )) continue;
-            found = base + off + sizeof(sig) - 1;   /* the jne opcode */
+            found = base + off + 5;        /* the immediate */
             matches++;
         }
     }
 
     if (matches != 1)
     {
-        L("GPU record match: %u signature matches, leaving alone", matches);
+        L("GPU entry match: %u signature matches, leaving alone", matches);
         return;
     }
     {
         DWORD old;
 
-        if (!VirtualProtect( found, 2, PAGE_EXECUTE_READWRITE, &old )) return;
-        found[0] = 0x90;
-        found[1] = 0x90;
-        VirtualProtect( found, 2, old, &old );
-        L("GPU record match enabled at %p", found);
+        if (!VirtualProtect( found, 1, PAGE_EXECUTE_READWRITE, &old )) return;
+        *found = 0x00;
+        VirtualProtect( found, 1, old, &old );
+        L("GPU entry match relaxed at %p", found);
     }
 }
 
@@ -443,7 +454,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, void *rsv)
         realmod = LoadLibraryA(path);
         base = (ULONG_PTR)realmod;
         if (realmod) real_qi = (qi_t)GetProcAddress(realmod, "QueryInterface");
-        allow_gpu_record_match();
+        accept_unlinked_gpu_entries();
         patch_import( "kernel32.dll", "GetProcAddress",
                       get_proc_address_hook, (void **)&real_get_proc_address );
         L("shim up: real=%p qi=%p", (void *)realmod, (void *)real_qi);

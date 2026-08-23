@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 # Launch NZXT CAM in its patched Wine prefix.
 export WINEPREFIX="__PREFIX__"
+
+# Wine's PnP manager rebuilds the device tree (and rewrites DEVPKEY_Device_Parent)
+# every time the server starts, so the USB composite-device fixup has to be applied
+# after enumeration and before CAM looks for its device. Give plugplay a moment to
+# settle first, otherwise the interfaces are not in the registry yet.
+FIXUP="$WINEPREFIX/drive_c/windows/system32/usbtree-fixup.exe"
+if [ -f "$FIXUP" ]; then
+  wine cmd /c exit >/dev/null 2>&1
+  sleep 3
+  wine "$FIXUP" >/dev/null 2>&1
+fi
+
 cd "$WINEPREFIX/drive_c/Program Files/NZXT CAM" || exit 1
 exec wine "NZXT CAM.exe" "$@"

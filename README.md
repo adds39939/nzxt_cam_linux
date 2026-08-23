@@ -64,10 +64,10 @@ CoolingManager: Received new cooling configuration ... CurvePoint(20°C => 60.00
 (client-v2) Set cooling config: SUCCESS
 ```
 
-**Not yet finished:** see *Remaining work* at the end. The LCD still reports
-`Could not find WinUSB endpoint`, and the USB device tree that makes discovery work
-is currently injected into the registry after PnP rather than produced by
-`wineusb.sys`, so it does not survive a `wineserver` restart.
+Discovery survives a cold start: the launcher runs `usbtree-fixup.exe` (see
+*The USB device tree* below) after Wine's PnP manager has enumerated and before CAM
+starts. **Not yet finished:** the LCD still reports `Could not find WinUSB endpoint`
+— see *Remaining work*.
 
 ---
 
@@ -357,17 +357,45 @@ key L"{A45C254E-DF1C-4EFD-8020-67D146A850E0} 30"  ->  E_BOUNDS   (Address / port
 
 `patches/15-…` switches to upper-case, matching both Windows and Wine's own API.
 
+## The USB device tree
+
+CAM correlates a HID interface with its WinUSB sibling by walking up to the USB hub
+and port. On Windows the composite device is the parent of its interfaces:
+
+```
+USB\VID_1E71&PID_3012\512&258&3&4          composite, Address = hub port
+  ├── …&MI_00\512&258&3&4                   vendor interface (WinUSB)
+  └── …&MI_01\258&1F6494820E40092C&0&0&0    HID interface
+        └── HID\VID_1E71&PID_3012&MI_01\…
+```
+
+Wine's tree is **flat**. `wineusb` (libusb) and `winebus` (udev) enumerate the same
+physical device independently and parent every node straight to their own synthetic
+root, so walking up from a HID interface reaches `ROOT\WINE\WINEBUS` and stops —
+never finding a USB device node or a port number.
+
+`tools/usbtree-fixup.c` does what `usbccgp` does on Windows: it re-points every USB
+interface node's `DEVPKEY_Device_Parent` at the matching composite, publishes the
+composite's children, and fills in `DEVPKEY_Device_Address` from the port number Wine
+already encodes in the composite's instance ID (`usbver&revision&busnum&portnum`, so
+`512&258&3&4` means bus 3, port 4).
+
+It is not a driver change because the two buses cannot name each other's devnodes:
+`winebus`'s `device_desc` has no bus/port/bcdDevice fields, so it cannot construct
+`wineusb`'s composite instance ID without an ABI change across its unixlib. Doing the
+join once in userspace, from data both sides already publish, is smaller and does not
+fork the driver interface.
+
+Wine's PnP manager rewrites `DEVPKEY_Device_Parent` every time the server starts, so
+the fixup has to run **after** enumeration and **before** CAM — which is what the
+`nzxt-cam` launcher does. Run it by hand with `-v` to see what it changes:
+
+```bash
+wine ~/.../system32/usbtree-fixup.exe -v
+```
+
 ## Remaining work
 
-- **The USB device tree is not yet produced by Wine.** CAM walks
-  `HID\…&MI_01 → USB\…&MI_01 → USB\VID&PID\<inst> → USB\ROOT_HUB30\…`, reading
-  `Address` (the port) and `PDOName`. Wine's tree is flat — `wineusb` and `winebus`
-  enumerate the same physical device independently, both parented directly to a
-  synthetic root — so the walk dead-ends. Detection currently works by injecting the
-  Windows-shaped tree into the registry *after* PnP has run; Wine's PnP rewrites
-  `DEVPKEY_Device_Parent` on every boot, so this does **not** persist. It needs to
-  move into `wineusb.sys`, which already knows the bus and port numbers from libusb
-  (they are encoded in the instance ID, e.g. `512&258&3&4` = bus 3, port 4).
 - **LCD:** `lcd.rs: Could not find WinUSB endpoint, LCD capabilities will not be
   functional` — another `E_NOTIMPL` on the path that locates the WinUSB interface.
 - **Firmware update:** untested.

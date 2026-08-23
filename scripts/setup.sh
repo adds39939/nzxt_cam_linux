@@ -42,6 +42,7 @@ for d in propsys windows.devices.enumeration cfgmgr32 winusb wintypes setupapi; 
   cp "$REPO/prebuilt/$d.dll" "$SYS/$d.dll"
   wine reg add 'HKCU\Software\Wine\DllOverrides' /v "$d" /t REG_SZ /d native /f >/dev/null 2>&1
 done
+cp "$REPO/prebuilt/usbtree-fixup.exe" "$SYS/usbtree-fixup.exe"
 wineserver -w
 
 if [ -n "$INSTALLER" ]; then

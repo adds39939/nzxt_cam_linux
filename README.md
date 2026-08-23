@@ -88,6 +88,7 @@ Wine DPI (LogPixels) = 120         cam.log = 4600,     device detected, DPR 1.25
 | UI, navigation, all pages | Motherboard **fan** speeds and control |
 | **CPU temperature** (via the CPUID shim) | Motherboard **temperatures** |
 | **CPU clock**, load %, model, codename, socket | **GPU fan** speed (see below) |
+| | **Capture Card** page (crashes the renderer) |
 | **GPU temperature / clock / load** | Firmware update (untested) |
 | RAM usage | |
 | Network throughput | |
@@ -651,6 +652,18 @@ The shim also serves `KMTQAITYPE_ADAPTERADDRESS`, which Wine's
 
 CAM now shows GPU temperature, clock and load, and offers **GPU Temperature** as a
 pump/fan curve source and on the LCD alongside Liquid and CPU.
+
+### 23. The Capture Card page soft-locks the app
+
+Opening Capture Card kills the Electron renderer under Wine (exit code
+`0xC0000409`, `STATUS_STACK_BUFFER_OVERRUN`). On its own that would just be a
+crashed page, but CAM persists the current route in `DataStorage/.../router.json`
+and restores it on the next launch -- so one click leaves the app permanently stuck
+on a blank page, crash-looping until it hits its own crash threshold.
+
+The launcher rewrites that route back to the dashboard before starting CAM, so the
+app can always be recovered by relaunching it. The page itself is still fatal;
+nothing here makes capture work.
 
 ## Remaining work
 

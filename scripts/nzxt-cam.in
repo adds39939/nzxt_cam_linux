@@ -34,6 +34,18 @@ if [ -n "${NZXT_CAM_SCALE:-}" ]; then
   fi
 fi
 
+# CAM restores the last page it was on. The Capture Card page kills the renderer
+# under Wine (exit code 0xC0000409), and because the route is restored on every
+# launch, one click leaves the app permanently stuck on a blank page. Send it back
+# to the dashboard rather than let it reload the crash. Add other routes here if
+# any turn out to be as fatal.
+for router in "$WINEPREFIX"/drive_c/users/*/AppData/Roaming/"NZXT CAM"/DataStorage/latest/local/router.json; do
+  [ -f "$router" ] || continue
+  if grep -q '"/capture"' "$router" 2>/dev/null; then
+    printf '{"pathname":"/"}\n' > "$router"
+  fi
+done
+
 # NVIDIA exposes no hwmon node, so the shim cannot read the GPU itself. Refresh
 # the readings into a file it can: temperature C, load %, clock MHz, fan %, power W.
 GPU_STATE="$WINEPREFIX/drive_c/windows/temp/nzxt-cam-gpu"

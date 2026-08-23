@@ -34,5 +34,21 @@ if [ -n "${NZXT_CAM_SCALE:-}" ]; then
   fi
 fi
 
+# NVIDIA exposes no hwmon node, so the shim cannot read the GPU itself. Refresh
+# the readings into a file it can: temperature C, load %, clock MHz, fan %, power W.
+GPU_STATE="$WINEPREFIX/drive_c/windows/temp/nzxt-cam-gpu"
+if command -v nvidia-smi >/dev/null 2>&1; then
+  mkdir -p "$(dirname "$GPU_STATE")"
+  (
+    while :; do
+      nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,clocks.gr,fan.speed,power.draw \
+                 --format=csv,noheader,nounits > "$GPU_STATE.tmp" 2>/dev/null \
+        && mv -f "$GPU_STATE.tmp" "$GPU_STATE"
+      sleep 2
+    done
+  ) &
+  trap 'kill $! 2>/dev/null' EXIT
+fi
+
 cd "$WINEPREFIX/drive_c/Program Files/NZXT CAM" || exit 1
 exec wine "NZXT CAM.exe" "$@"

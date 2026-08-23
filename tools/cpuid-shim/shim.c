@@ -107,7 +107,218 @@ static float core_multiplier( unsigned core )
     return (float)khz / 100000.0f;
 }
 
+/* GPU readings, refreshed into a file by the launcher: nvidia-smi is a process,
+ * and NVIDIA exposes no hwmon node, so it cannot be read from in here directly.
+ * Order: temperature C, utilisation %, clock MHz, fan %, power W. */
+struct gpu_readings { float temperature, load, clock, fan, power; int valid; };
+/* fan is parsed but unused: nvidia-smi reports a percentage, CAM wants RPM. */
+
+static void read_gpu( struct gpu_readings *out )
+{
+    static struct gpu_readings cached;
+    static DWORD last;
+    DWORD now = GetTickCount();
+    FILE *f;
+
+    if (cached.valid && now - last < 1000) { *out = cached; return; }
+    last = now;
+    cached.valid = 0;
+    if ((f = fopen( "C:\\windows\\temp\\nzxt-cam-gpu", "r" )))
+    {
+        if (fscanf( f, "%f, %f, %f, %f, %f", &cached.temperature, &cached.load,
+                    &cached.clock, &cached.fan, &cached.power ) == 5)
+            cached.valid = 1;
+        fclose( f );
+    }
+    *out = cached;
+}
+
+/* ---- CAM's GPU record match ------------------------------------------------
+ *
+ * cam_helper only attaches SDK sensor data to a GPU once it finds a record whose
+ * "+0x38" field equals 1. That field is derived from adapter data Wine does not
+ * supply, and stays 0 here, so the match never happens and every GPU reading is
+ * n/a even though the GPU itself is detected. Neutralise that one branch.
+ *
+ * Located by signature rather than by address so a CAM update moving the code
+ * does not silently patch something else; patched only on an unambiguous match.
+ *
+ *   42 83 7c 38 38 01   cmpl $0x1,0x38(%rax,%r15,1)
+ *   75 xx               jne  <next record>
+ */
+static void allow_gpu_record_match(void)
+{
+    static const unsigned char sig[] = { 0x42, 0x83, 0x7c, 0x38, 0x38, 0x01, 0x75 };
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)GetModuleHandleA( NULL );
+    IMAGE_NT_HEADERS *nt;
+    IMAGE_SECTION_HEADER *sec;
+    ULONG_PTR mod = (ULONG_PTR)dos;
+    unsigned char *found = NULL;
+    unsigned i, matches = 0;
+
+    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+    nt = (IMAGE_NT_HEADERS *)(mod + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+    sec = IMAGE_FIRST_SECTION( nt );
+
+    for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
+    {
+        unsigned char *base;
+        SIZE_T off;
+
+        if (memcmp( sec->Name, ".text", 5 )) continue;
+        base = (unsigned char *)(mod + sec->VirtualAddress);
+        for (off = 0; off + sizeof(sig) < sec->Misc.VirtualSize; off++)
+        {
+            if (memcmp( base + off, sig, sizeof(sig) )) continue;
+            found = base + off + sizeof(sig) - 1;   /* the jne opcode */
+            matches++;
+        }
+    }
+
+    if (matches != 1)
+    {
+        L("GPU record match: %u signature matches, leaving alone", matches);
+        return;
+    }
+    {
+        DWORD old;
+
+        if (!VirtualProtect( found, 2, PAGE_EXECUTE_READWRITE, &old )) return;
+        found[0] = 0x90;
+        found[1] = 0x90;
+        VirtualProtect( found, 2, old, &old );
+        L("GPU record match enabled at %p", found);
+    }
+}
+
+/* ---- D3DKMT ---------------------------------------------------------------
+ *
+ * cam_helper resolves these by name, so replacing what GetProcAddress hands back
+ * is enough. Wine implements only two KMTQAITYPE_* queries; CAM wants
+ * KMTQAITYPE_ADAPTERADDRESS (6), the adapter's PCI bus/device/function. */
+struct query_adapter_info { unsigned adapter, type; void *data; unsigned size; };
+struct adapter_address { unsigned bus, device, function; };
+
+static long (WINAPI *real_query_adapter_info)( struct query_adapter_info * );
+static FARPROC (WINAPI *real_get_proc_address)( HMODULE, const char * );
+
+static long WINAPI query_adapter_info_hook( struct query_adapter_info *desc )
+{
+    long status = real_query_adapter_info( desc );
+
+    if (status && desc && desc->type == 6 && desc->data &&
+        desc->size >= sizeof(struct adapter_address))
+    {
+        struct adapter_address *addr = desc->data;
+        DWORD bus = 0, device = 0, function = 0;
+        HKEY key = 0;
+        DWORD size = sizeof(DWORD);
+
+        /* gpu-pci-fixup has already put the host's PCI address on the device node. */
+        if (!RegOpenKeyExA( HKEY_LOCAL_MACHINE,
+                            "System\\CurrentControlSet\\Enum\\PCI", 0,
+                            KEY_ENUMERATE_SUB_KEYS, &key ))
+        {
+            char id[256];
+            DWORD len = sizeof(id);
+
+            if (!RegEnumKeyExA( key, 0, id, &len, NULL, NULL, NULL, NULL ))
+            {
+                char path[512];
+                HKEY dev;
+
+                snprintf( path, sizeof(path), "System\\CurrentControlSet\\Enum\\PCI\\%s\\00000000", id );
+                if (!RegOpenKeyExA( HKEY_LOCAL_MACHINE, path, 0, KEY_QUERY_VALUE, &dev ))
+                {
+                    DWORD value = 0;
+                    size = sizeof(value);
+                    if (!RegQueryValueExA( dev, "BusNumber", NULL, NULL, (BYTE *)&value, &size ))
+                        bus = value;
+                    size = sizeof(value);
+                    if (!RegQueryValueExA( dev, "Address", NULL, NULL, (BYTE *)&value, &size ))
+                    {
+                        device = value >> 16;
+                        function = value & 0xffff;
+                    }
+                    RegCloseKey( dev );
+                }
+            }
+            RegCloseKey( key );
+        }
+        addr->bus = bus;
+        addr->device = device;
+        addr->function = function;
+        status = 0;
+    }
+    return status;
+}
+
+static FARPROC WINAPI get_proc_address_hook( HMODULE module, const char *name )
+{
+    FARPROC ret = real_get_proc_address( module, name );
+
+    if (ret && (ULONG_PTR)name > 0xffff && !strcmp( name, "D3DKMTQueryAdapterInfo" ))
+    {
+        real_query_adapter_info = (void *)ret;
+        ret = (FARPROC)query_adapter_info_hook;
+    }
+    return ret;
+}
+
+static void patch_import( const char *dll_name, const char *func_name, void *replacement,
+                          void **original )
+{
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)GetModuleHandleA( NULL );
+    IMAGE_NT_HEADERS *nt;
+    IMAGE_IMPORT_DESCRIPTOR *desc;
+    ULONG_PTR mod = (ULONG_PTR)dos;
+    DWORD rva;
+
+    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+    nt = (IMAGE_NT_HEADERS *)(mod + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+    rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    if (!rva) return;
+
+    for (desc = (IMAGE_IMPORT_DESCRIPTOR *)(mod + rva); desc->Name; desc++)
+    {
+        IMAGE_THUNK_DATA *names, *addrs;
+
+        if (_stricmp( (const char *)(mod + desc->Name), dll_name )) continue;
+        names = (IMAGE_THUNK_DATA *)(mod + desc->OriginalFirstThunk);
+        addrs = (IMAGE_THUNK_DATA *)(mod + desc->FirstThunk);
+        for (; names->u1.AddressOfData; names++, addrs++)
+        {
+            IMAGE_IMPORT_BY_NAME *by_name;
+            DWORD old;
+
+            if (IMAGE_SNAP_BY_ORDINAL( names->u1.Ordinal )) continue;
+            by_name = (IMAGE_IMPORT_BY_NAME *)(mod + names->u1.AddressOfData);
+            if (strcmp( (const char *)by_name->Name, func_name )) continue;
+            if (!VirtualProtect( addrs, sizeof(*addrs), PAGE_READWRITE, &old )) return;
+            *original = (void *)addrs->u1.Function;
+            addrs->u1.Function = (ULONG_PTR)replacement;
+            VirtualProtect( addrs, sizeof(*addrs), old, &old );
+            return;
+        }
+    }
+}
+
+static int readable( const void *p, SIZE_T n )
+{
+    MEMORY_BASIC_INFORMATION mbi;
+
+    if (!p || (ULONG_PTR)p < 0x10000) return 0;
+    if (!VirtualQuery( p, &mbi, sizeof(mbi) )) return 0;
+    if (mbi.State != MEM_COMMIT) return 0;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return 0;
+    return (ULONG_PTR)p + n <= (ULONG_PTR)mbi.BaseAddress + mbi.RegionSize;
+}
+
 /* ---- interception --------------------------------------------------------- */
+
+static unsigned real_device_count;      /* the SDK's own devices; ours is appended */
 
 void on_call(struct ctx *x) { (void)x; }
 
@@ -128,6 +339,65 @@ void on_ret(struct ctx *x)
         value = cpu_package_temp();
         memcpy( &bits, &value, sizeof(bits) );
         x->xmm = bits;
+        break;
+
+    /* The SDK enumerates no GPU without its driver, so append one device of the
+     * class cam_helper treats as a GPU and answer its sensor queries from Linux.
+     * Sensor classes: 0x2000 temperature, 0x3000 fan, 0x5000 power,
+     * 0xe000 load, 0xf000 clock. */
+    case 0xaec15d82:            /* device count */
+        real_device_count = (unsigned)x->rax;
+        x->rax = real_device_count + 1;
+        break;
+
+    case 0x67a4cf49:            /* device class */
+        if (x->b == real_device_count) x->rax = 0x20;
+        break;
+
+    case 0x0ac21584:            /* sensor count for (device, class) */
+        if (x->b == real_device_count)
+        {
+            struct gpu_readings gpu;
+
+            read_gpu( &gpu );
+            /* 0x3000 (fan) is left unanswered: CAM shows it as RPM and nvidia-smi
+             * only reports a percentage, so there is nothing honest to put there. */
+            switch ((unsigned)x->c) {
+            case 0x2000: case 0x5000: case 0xe000: case 0xf000:
+                x->rax = gpu.valid ? 1 : 0;
+                break;
+            }
+        }
+        break;
+
+    case 0xac2b5856:            /* sensor value: id, name, value, min, max, avg */
+        if (x->b == real_device_count && x->c == 0)
+        {
+            struct gpu_readings gpu;
+            const char *name = NULL;
+            float value = -1.0f;
+            unsigned bits;
+
+            read_gpu( &gpu );
+            if (gpu.valid) switch ((unsigned)x->d) {
+            case 0x2000: value = gpu.temperature; name = "GPU"; break;
+            case 0x5000: value = gpu.power;       name = "GPU Power"; break;
+            case 0xe000: value = gpu.load;        name = "GPU Load"; break;
+            case 0xf000: value = gpu.clock;       name = "GPU Clock"; break;
+            }
+            if (name)
+            {
+                memcpy( &bits, &value, sizeof(bits) );
+                if (readable( (void *)x->s5,  sizeof(unsigned) )) *(unsigned *)x->s5  = (unsigned)x->d;
+                if (readable( (void *)x->s6,  sizeof(void *) ))
+                    *(void **)x->s6 = SysAllocStringByteLen( name, (UINT)strlen( name ) );
+                if (readable( (void *)x->s7,  sizeof(unsigned) )) *(unsigned *)x->s7  = bits;
+                if (readable( (void *)x->s8,  sizeof(unsigned) )) *(unsigned *)x->s8  = bits;
+                if (readable( (void *)x->s9,  sizeof(unsigned) )) *(unsigned *)x->s9  = bits;
+                if (readable( (void *)x->s10, sizeof(unsigned) )) *(unsigned *)x->s10 = bits;
+                x->rax = 1;
+            }
+        }
         break;
 
     case 0x039a0734:            /* per-core clock multiplier, in XMM0 */
@@ -173,6 +443,9 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, void *rsv)
         realmod = LoadLibraryA(path);
         base = (ULONG_PTR)realmod;
         if (realmod) real_qi = (qi_t)GetProcAddress(realmod, "QueryInterface");
+        allow_gpu_record_match();
+        patch_import( "kernel32.dll", "GetProcAddress",
+                      get_proc_address_hook, (void **)&real_get_proc_address );
         L("shim up: real=%p qi=%p", (void *)realmod, (void *)real_qi);
     }
     return TRUE;

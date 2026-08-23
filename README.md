@@ -87,8 +87,8 @@ Wine DPI (LogPixels) = 120         cam.log = 4600,     device detected, DPR 1.25
 |---|---|
 | UI, navigation, all pages | Motherboard **fan** speeds and control |
 | **CPU temperature** (via the CPUID shim) | Motherboard **temperatures** |
-| **CPU clock**, load %, model, codename, socket | **GPU** temperature / clock / fan readings |
-| **GPU detected** as a device (readings still `n/a`) | Firmware update (untested) |
+| **CPU clock**, load %, model, codename, socket | **GPU fan** speed (see below) |
+| **GPU temperature / clock / load** | Firmware update (untested) |
 | RAM usage | |
 | Network throughput | |
 | Per-process CPU/RAM/net table | |
@@ -617,23 +617,51 @@ With that, `cam_helper` loads `gdi32`, resolves `D3DKMTOpenAdapterFromDeviceName
 device -- `monitoring.rs` switches from the `GPUs: none identified` warning to listing
 the adapter.
 
+### 22. GPU temperature, clock and load
+
+With the GPU detected (fix #21) every reading still showed `n/a`, because CAM takes
+GPU telemetry from the CPUID SDK, not from D3DKMT -- and the driverless SDK enumerates
+no GPU. `cam_helper` walks the SDK device list, picks out devices of class `0x20`, and
+attaches their sensors to the GPU records it built from D3DKMT.
+
+The shim appends one device of that class and answers its sensor queries from Linux.
+The sensor classes, identified by feeding each a distinct value and reading the result
+off CAM's own UI:
+
+| class | reading | source |
+|---|---|---|
+| `0x2000` | temperature | `nvidia-smi temperature.gpu` |
+| `0x3000` | fan (RPM) | not served -- only a percentage is available |
+| `0x5000` | power | `nvidia-smi power.draw` |
+| `0xe000` | load | `nvidia-smi utilization.gpu` |
+| `0xf000` | clock | `nvidia-smi clocks.gr` |
+
+NVIDIA exposes no hwmon node, so the shim cannot read the GPU directly the way it
+reads `k10temp`; the launcher refreshes `nvidia-smi` output into a small file instead.
+
+One piece is a genuine patch rather than a fix: before attaching sensors, `cam_helper`
+looks for a GPU record whose `+0x38` field is 1. That field comes from adapter data
+Wine does not provide and stays 0, so the shim NOPs the branch. It finds it by
+signature (`cmpl $0x1,0x38(%rax,%r15,1)` followed by `jne`) and only patches on a
+single unambiguous match, so a CAM update that moves the code disables the patch
+rather than corrupting something else.
+
+The shim also serves `KMTQAITYPE_ADAPTERADDRESS`, which Wine's
+`D3DKMTQueryAdapterInfo` does not implement, from the PCI address fix #21 wrote.
+
+CAM now shows GPU temperature, clock and load, and offers **GPU Temperature** as a
+pump/fan curve source and on the LCD alongside Liquid and CPU.
+
 ## Remaining work
 
-- **GPU readings.** The GPU is now *detected* (fix #21) and appears as a device, but
-  its Temperature / Clock / Fan / Load still read `n/a`. Those come from a CPUID SDK
-  device of class `0x20`, which `cam_helper` matches to the GPU record it built from
-  D3DKMT. Synthesising a class-`0x20` device is accepted as far as the match, which
-  then requires the GPU record's `+0x38 == 1` and `+0x3c` to equal a per-GPU ordinal;
-  that has not been satisfied yet. Once matched, `cam_helper` reads sensor classes
-  `0x3000` (fan) and `0xf000` from it, so the shim would then supply them from
-  `nvidia-smi`/NVML.
-
-  Also unimplemented in Wine and worth doing properly: `D3DKMTQueryStatistics` is a
-  stub that returns success without filling anything, and `D3DKMTQueryAdapterInfo`
-  handles only two of the `KMTQAITYPE_*` queries. `KMTQAITYPE_ADAPTERADDRESS` (6) is
-  the one CAM needs; the shim serves it, but `KMTQAITYPE_ADAPTERPERFDATA` carries GPU
-  temperature, fan RPM and power and would be the natural home for that data.
-
+- **GPU fan speed.** Left deliberately unreported: CAM's field is RPM and
+  `nvidia-smi` only exposes a percentage (`fan.speed.rpm` is not a queryable field),
+  so there is nothing honest to put there. Everything else on the GPU works.
+- **The GPU record match** is forced rather than satisfied (fix #22). `cam_helper`
+  requires a field in its own GPU record to equal 1 before it will attach sensor data;
+  that field is derived from adapter data Wine does not supply and stays 0. The shim
+  neutralises the branch, located by signature. Finding what actually feeds that field
+  would let the patch go away.
 - **Motherboard fans and temperatures.** Second driver (`cam_driver_mb.sys`), reached
   through the same SDK; the sensor getter (`ac2b5856`) is decoded but the fan class
   (`0x3000`) is served off the mainboard device, which is DMI-only here.

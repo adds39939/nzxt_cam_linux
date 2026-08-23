@@ -1,29 +1,74 @@
 # NZXT CAM on Linux (Wine)
 
-Getting **NZXT CAM 4.76.5** to actually run under Wine on Linux.
+Getting **NZXT CAM 4.76.5** to actually run under Wine on Linux -- and to detect and
+drive an NZXT cooler, including its LCD.
 
-Out of the box CAM installs fine but never gets past its loading screen. Four
-separate problems stack up behind each other. This repo fixes all of them.
+Out of the box CAM installs fine but never gets past its loading screen, and even once
+it starts it sees no NZXT hardware at all. Nineteen separate gaps stack up behind each
+other. This repo fixes all of them.
 
 ![CAM running under Wine](docs/dashboard.png)
 
-Verified on Arch Linux, `wine-11.16`, NZXT CAM 4.76.5, KDE/Wayland.
+Live telemetry and control of a Kraken Elite V2 -- liquid temperature, pump and fan
+RPM, per-channel lighting and the LCD:
+
+| Cooling | Lighting |
+|---|---|
+| ![Cooling](docs/cooling.png) | ![Lighting](docs/lighting.png) |
+
+Verified on Arch Linux, `wine-11.16`, NZXT CAM 4.76.5, KDE/Wayland, with an
+NZXT Kraken Elite V2 (`1e71:3012`).
 
 ---
 
-## Quick start
+## Install
 
 ```bash
-sudo pacman -S --needed wine winetricks cabextract     # Arch
-git clone <this repo> ~/dev/repos/nzxt_cam_linux
-cd ~/dev/repos/nzxt_cam_linux
-./scripts/setup.sh ~/Downloads/NZXT-CAM-Setup.exe
+curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/install.sh | bash
+```
+
+That downloads NZXT CAM, asks where to put the Wine prefix (default `~/pfx/nzxt_cam`),
+builds the patched prefix and installs a `nzxt-cam` launcher. It will offer to install
+the two kernel drivers with `sudo` -- without those the cooler is not detected.
+
+Then:
+
+```bash
 nzxt-cam
 ```
 
-Already installed CAM? Omit the installer path and `setup.sh` will just apply the fixes.
+You need `wine`, `winetricks`, `cabextract`, `curl` and `git` first:
 
+```bash
+sudo pacman -S --needed wine winetricks cabextract curl git   # Arch
+sudo apt install wine winetricks cabextract curl git          # Debian/Ubuntu
+sudo dnf install wine winetricks cabextract curl git          # Fedora
+```
+
+### From a clone
+
+```bash
+git clone https://github.com/adds39939/nzxt_cam_linux
+cd nzxt_cam_linux
+./install.sh                                     # same flow, no download of itself
+# or, if you already have the installer:
+./scripts/setup.sh ~/Downloads/NZXT-CAM-Setup.exe
+sudo ./scripts/install-wine-drivers.sh
+```
+
+Already installed CAM? Omit the installer path and `setup.sh` will just apply the fixes.
 The prefix defaults to `~/pfx/nzxt_cam`; override with `WINEPREFIX=... ./scripts/setup.sh`.
+
+### Display scaling
+
+CAM is an Electron app and renders at 100% no matter what the desktop is set to, so on
+a scaled display it comes out small. The launcher reads your desktop scale (KDE via
+`kscreen-doctor`, else `GDK_SCALE`, else `Xft.dpi`) and passes it through, and
+`setup.sh` sets Wine's DPI to match so window chrome scales too. Override either way:
+
+```bash
+NZXT_CAM_SCALE=1.5 nzxt-cam
+```
 
 ---
 
@@ -40,15 +85,19 @@ The prefix defaults to `~/pfx/nzxt_cam`; override with `WINEPREFIX=... ./scripts
 | **Kraken Elite V2 detection** (`1e71:3012`) | |
 | **Pump / fan curve control** on the Kraken | |
 | **Kraken LCD** — live frames to the display | |
+| **Kraken liquid temp / pump / fan RPM** | |
 
-**Sensors will never work under Wine.** CAM reads them through a kernel driver
-(`cpuz162`, `cam_driver_mb.sys`). Wine has no kernel driver support, so you'll see:
+**Motherboard sensors will never work under Wine.** CAM reads CPU and board
+temperatures through a kernel driver (`cpuz162`, `cam_driver_mb.sys`). Wine has no
+kernel driver support, so you'll see:
 
 ```
 err:ntoskrnl:ZwLoadDriver failed to create driver L"...\cpuz162": c0000142
 ```
 
-Temperature and Fan stay `n/a`. This is not fixable in userspace.
+The CPU tile's Temperature and Fan stay `n/a`. This is not fixable in userspace. It
+does **not** affect the cooler: the Kraken reports its own liquid temperature and pump
+and fan RPM over USB, and those work (see the Cooling screenshot above).
 
 **NZXT device control** needs fixes #3–#15. The discovery path is not the obvious
 one: CAM's device-framework v2 runs a WinRT **`DeviceWatcher`** over the *HID*

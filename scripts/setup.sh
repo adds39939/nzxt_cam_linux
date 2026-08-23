@@ -43,6 +43,19 @@ for d in propsys windows.devices.enumeration windows.devices.usb cfgmgr32 winusb
   wine reg add 'HKCU\Software\Wine\DllOverrides' /v "$d" /t REG_SZ /d native /f >/dev/null 2>&1
 done
 cp "$REPO/prebuilt/usbtree-fixup.exe" "$SYS/usbtree-fixup.exe"
+
+# Match Wine's DPI to the desktop scale so window chrome and dialogs are not tiny on
+# a scaled display. The Electron renderer is scaled separately by the launcher.
+SCALE="${NZXT_CAM_SCALE:-}"
+if [ -z "$SCALE" ] && command -v kscreen-doctor >/dev/null 2>&1; then
+  SCALE=$(kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk '/Scale:/ {print $2; exit}')
+fi
+[ -z "$SCALE" ] && SCALE="${GDK_SCALE:-1}"
+DPI=$(awk -v s="$SCALE" 'BEGIN{printf "%d", (s*96)+0.5}')
+if [ "$DPI" -gt 96 ] 2>/dev/null; then
+  say "Setting Wine DPI to $DPI (desktop scale $SCALE)"
+  wine reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$DPI" /f >/dev/null 2>&1
+fi
 wineserver -w
 
 if [ -n "$INSTALLER" ]; then

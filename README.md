@@ -32,11 +32,13 @@ The prefix defaults to `~/pfx/nzxt_cam`; override with `WINEPREFIX=... ./scripts
 | Works | Doesn't |
 |---|---|
 | UI, navigation, all pages | CPU / motherboard **temperatures** |
-| CPU load %, clock | **Fan speeds** and fan control |
+| CPU load %, clock | Motherboard **fan** speeds and control |
 | RAM usage | **GPU** monitoring (`No supported graphics cards`) |
-| Network throughput | |
-| Per-process CPU/RAM/net table | |
+| Network throughput | Kraken **LCD** (see *Remaining work*) |
+| Per-process CPU/RAM/net table | Firmware update (untested) |
 | Lighting / Cooling / Audio pages render | |
+| **Kraken Elite V2 detection** (`1e71:3012`) | |
+| **Pump / fan curve control** on the Kraken | |
 
 **Sensors will never work under Wine.** CAM reads them through a kernel driver
 (`cpuz162`, `cam_driver_mb.sys`). Wine has no kernel driver support, so you'll see:
@@ -47,10 +49,25 @@ err:ntoskrnl:ZwLoadDriver failed to create driver L"...\cpuz162": c0000142
 
 Temperature and Fan stay `n/a`. This is not fixable in userspace.
 
-**NZXT device control** needs fixes #3–#8. CAM discovers every NZXT device through
-`GUID_DEVINTERFACE_USB_DEVICE` and drives it over **WinUSB** — cam-core has no HID
-device module at all, only `nzxt-device\src\device\usb\`. Wine registered no USB
-device interfaces and `winusb.dll` was 21 stubs, so CAM saw nothing.
+**NZXT device control** needs fixes #3–#15. The discovery path is not the obvious
+one: CAM's device-framework v2 runs a WinRT **`DeviceWatcher`** over the *HID*
+interface class, reads the vendor/product IDs from the returned
+`DeviceInformation.Properties`, then walks the device tree up to the USB **hub and
+port** to correlate the HID interface with its WinUSB sibling — and only then drives
+the device over WinUSB. Every one of those steps hit a gap in Wine.
+
+A Kraken Elite V2 (`1e71:3012`) is now detected and its pump/fan curve is applied:
+
+```
+arrival{device_id=0 arrival.device_type=KrakenEliteV2}: adding device
+CoolingManager: Received new cooling configuration ... CurvePoint(20°C => 60.00%)
+(client-v2) Set cooling config: SUCCESS
+```
+
+**Not yet finished:** see *Remaining work* at the end. The LCD still reports
+`Could not find WinUSB endpoint`, and the USB device tree that makes discovery work
+is currently injected into the registry after PnP rather than produced by
+`wineusb.sys`, so it does not survive a `wineserver` restart.
 
 ---
 
@@ -264,6 +281,99 @@ not exist in upstream Wine.
 
 The kernel IOCTL is deliberately a **generic passthrough**, so further work needs no
 kernel changes — `winusb.dll` installs into the prefix like the other user-mode DLLs.
+
+### 9. `SPDRP_PHYSICAL_DEVICE_OBJECT_NAME` returned nothing
+
+CAM asks for each device's PDO name while hunting for the parent hub. SetupAPI never
+implemented the property. `patches/09-…` synthesises a stable `\Device\<hash>` name
+from the device instance ID.
+
+### 10. WinUSB transfers failed with `ERROR_IO_PENDING`
+
+CAM opens the USB device `FILE_FLAG_OVERLAPPED`, so the synchronous
+`DeviceIoControl` in `winusb.dll` returned `ERROR_IO_PENDING` (997) and every
+transfer was reported as a failure. `patches/10-…` waits on the overlapped result.
+
+### 11. `IReference<UINT16>` did not exist  ← the root cause
+
+This one silently rejected **every** device, with no error anywhere.
+
+`wintypes` implements `IReference<T>` for BYTE, INT16, INT32, UINT32, INT64, UINT64,
+boolean, FLOAT, DOUBLE, GUID, HSTRING, DateTime, TimeSpan, Point, Size and Rect —
+but **not `UINT16`**. It can *create* a UInt16 property value (`CreateUInt16` exists)
+but `QueryInterface` for `IReference<UInt16>` returns `E_NOINTERFACE`.
+
+Every HID property CAM reads is UINT16:
+
+```
+System.DeviceInterface.Hid.VendorId / ProductId / UsagePage / UsageId
+```
+
+So CAM's vendor check failed on the very first property of every device, and the
+device list came back empty with nothing logged. `patches/11-…` declares
+`IReference<UINT16>` in `windows.foundation.idl` and implements the interface, and
+wires `CreateUInt16` to the `_iref` variant so the vtable is actually populated.
+
+### 12. `System.Devices.Children` was not a known property name
+
+CAM requests it while walking the tree. `PSGetPropertyKeyFromName` returned
+`TYPE_E_ELEMENTNOTFOUND` (0x8002802B), failing the whole query. `patches/12-…` adds
+it (`DEVPKEY_Device_Children`, `{4340a6c5-…},9`).
+
+### 13. Device *nodes* could not be queried at all
+
+Three separate holes in `cfgmgr32`, all in `patches/13-…`:
+
+- **`CM_Get_Child_Ex` was a stub that returned `CR_SUCCESS` without ever setting
+  `*child`**, and `CM_Get_Sibling_Ex` returned `CR_FAILURE`. Callers walking the
+  device tree got an uninitialised devnode. Both are now implemented on top of the
+  `DEVPKEY_Device_Children` data Wine already maintains. `CM_Get_DevNode_Status_Ex`
+  likewise never set its out-parameters.
+- **`DevGetObjectProperties` only handled device *interfaces***; `DevObjectTypeDevice`
+  fell through to a FIXME, so every devnode property query returned nothing.
+- **`DEVPKEY_Device_InstanceId` returned only the trailing instance component** —
+  `"0000"` instead of `"USB\ROOT_HUB30\0000"` — while `DEVPKEY_Device_Parent`
+  correctly returned full IDs. Nothing walking parent→child could match the two up.
+
+### 14. `DeviceInformation.CreateFromIdAsync` was a stub
+
+CAM calls it to fetch the *device* object (`DeviceInformationKind_Device`) behind an
+interface, which is how it reaches the hub and port. It returned `E_NOTIMPL`, so
+cam-core logged `FindHubAndPortFailed` and dropped the device. `patches/14-…`
+implements it for all three entry points using the existing DevQuery machinery.
+
+### 15. Unnamed property keys were stringified in the wrong case
+
+Property keys with no canonical name are exposed under their `{GUID} pid` string.
+Wine formatted the GUID **lower-case** while Windows — and Wine's own
+`PSStringFromPropertyKey` — use **upper-case**. `WindowsCompareStringOrdinal` is
+case-sensitive, so `Lookup` returned `E_BOUNDS` for properties that were present in
+the map:
+
+```
+key L"{A45C254E-DF1C-4EFD-8020-67D146A850E0} 16"  ->  E_BOUNDS   (PDOName)
+key L"{A45C254E-DF1C-4EFD-8020-67D146A850E0} 30"  ->  E_BOUNDS   (Address / port)
+```
+
+`patches/15-…` switches to upper-case, matching both Windows and Wine's own API.
+
+## Remaining work
+
+- **The USB device tree is not yet produced by Wine.** CAM walks
+  `HID\…&MI_01 → USB\…&MI_01 → USB\VID&PID\<inst> → USB\ROOT_HUB30\…`, reading
+  `Address` (the port) and `PDOName`. Wine's tree is flat — `wineusb` and `winebus`
+  enumerate the same physical device independently, both parented directly to a
+  synthetic root — so the walk dead-ends. Detection currently works by injecting the
+  Windows-shaped tree into the registry *after* PnP has run; Wine's PnP rewrites
+  `DEVPKEY_Device_Parent` on every boot, so this does **not** persist. It needs to
+  move into `wineusb.sys`, which already knows the bus and port numbers from libusb
+  (they are encoded in the instance ID, e.g. `512&258&3&4` = bus 3, port 4).
+- **LCD:** `lcd.rs: Could not find WinUSB endpoint, LCD capabilities will not be
+  functional` — another `E_NOTIMPL` on the path that locates the WinUSB interface.
+- **Firmware update:** untested.
+- Unrelated bug spotted while reading `dlls/wintypes/map.c`: `map_entry_clear` calls
+  `IInspectable_AddRef` on the value it is about to drop, where it should `Release`.
+  Left alone here because changing refcounting was not needed for this work.
 
 ## Kernel drivers need root
 

@@ -27,9 +27,15 @@ NZXT Kraken Elite V2 (`1e71:3012`).
 curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/install.sh | bash
 ```
 
-That downloads NZXT CAM, asks where to put the Wine prefix (default `~/pfx/nzxt_cam`),
-builds the patched prefix and installs a `nzxt-cam` launcher. It will offer to install
-the two kernel drivers with `sudo` -- without those the cooler is not detected.
+That downloads NZXT CAM and the latest release, asks where to put the Wine prefix
+(default `~/pfx/nzxt_cam`), builds the patched prefix and installs a `nzxt-cam`
+launcher. It will offer to install the two kernel drivers with `sudo` -- without those
+the cooler is not detected.
+
+The patched Wine binaries are **not kept in this repository**. They are built from
+source by [`.github/workflows/release.yaml`](.github/workflows/release.yaml) on every
+push to `main` and attached to a release, which is what the installer downloads. So
+nothing is compiled on your machine, and nothing opaque is committed here.
 
 Then:
 
@@ -37,12 +43,12 @@ Then:
 nzxt-cam
 ```
 
-You need `wine`, `winetricks`, `cabextract`, `curl` and `git` first:
+You need `wine`, `winetricks`, `cabextract`, `curl` and `tar` first:
 
 ```bash
-sudo pacman -S --needed wine winetricks cabextract curl git   # Arch
-sudo apt install wine winetricks cabextract curl git          # Debian/Ubuntu
-sudo dnf install wine winetricks cabextract curl git          # Fedora
+sudo pacman -S --needed wine winetricks cabextract curl tar   # Arch
+sudo apt install wine winetricks cabextract curl tar          # Debian/Ubuntu
+sudo dnf install wine winetricks cabextract curl tar          # Fedora
 ```
 
 ### Sensors
@@ -67,15 +73,24 @@ its readings just stay `n/a`. AMD and Intel GPUs are not wired up yet.
 
 ### From a clone
 
+A clone has no `prebuilt/`, so either let `install.sh` pull the release as usual:
+
 ```bash
 git clone https://github.com/adds39939/nzxt_cam_linux
 cd nzxt_cam_linux
-./install.sh                                     # same flow, no download of itself
-# or, if you already have the installer:
+./install.sh                    # fetches the release for the binaries
+```
+
+or build them yourself, which needs a PE cross-compiler and Wine's build
+dependencies:
+
+```bash
+./scripts/build-wine-dlls.sh    # builds everything into prebuilt/ (takes a while)
 ./scripts/setup.sh ~/Downloads/NZXT-CAM-Setup.exe
 sudo ./scripts/install-wine-drivers.sh
 ```
 
+Once `prebuilt/` exists, `install.sh` uses your local build rather than the release.
 Already installed CAM? Omit the installer path and `setup.sh` will just apply the fixes.
 The prefix defaults to `~/pfx/nzxt_cam`; override with `WINEPREFIX=... ./scripts/setup.sh`.
 
@@ -145,15 +160,17 @@ Wine DPI (LogPixels) = 120         cam.log = 4600,     device detected, DPR 1.25
 
 ## Wine version compatibility
 
-`prebuilt/` is built against the version in `prebuilt/BUILT_AGAINST` (currently
-`11.16`). On a different Wine version, rebuild:
+Releases are built against the version in [`WINE_VERSION`](WINE_VERSION) (currently
+`11.16`), and `install.sh` warns if yours differs. On a different Wine version,
+rebuild against your own:
 
 ```bash
-./scripts/build-wine-dlls.sh          # uses your installed wine version
+./scripts/build-wine-dlls.sh $(wine --version | sed s/^wine-//)
 ./scripts/setup.sh                    # reinstall them
 ```
 
-Needs a PE cross-compiler (`mingw-w64-gcc` on Arch, `gcc-mingw-w64-x86-64` on Debian).
+Needs a PE cross-compiler (`mingw-w64-gcc` on Arch, `gcc-mingw-w64-x86-64` on Debian)
+and Wine's build dependencies (`flex`, `bison`, `libusb-1.0-0-dev`).
 
 Most of the Wine changes are small and upstream-shaped — worth filing at
 [WineHQ Bugzilla](https://bugs.winehq.org/). They are not CAM-specific: they affect
@@ -250,9 +267,10 @@ wine ~/.../system32/usbtree-fixup.exe -v
 
 This repository's scripts, patches and docs are MIT (see `LICENSE`).
 
-`prebuilt/*.dll` are compiled from patched Wine sources and are therefore
-**LGPL-2.1-or-later** derivative works of Wine — see `NOTICE` for the
-corresponding-source pointers and rebuild instructions.
+The binaries in each release's `prebuilt/` are compiled from patched Wine sources and
+are therefore **LGPL-2.1-or-later** derivative works of Wine — see `NOTICE` for the
+corresponding-source pointers and rebuild instructions. They are built by CI from the
+patches in this repository, and are not committed here.
 
 No NZXT code or assets are redistributed here; get CAM from NZXT. This project
 is unaffiliated with NZXT.

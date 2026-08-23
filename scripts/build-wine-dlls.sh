@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Rebuild every patched Wine component from source.
-# Needed when your Wine version differs from prebuilt/BUILT_AGAINST.
+# Build every patched Wine component, and the small PE tools, into prebuilt/.
+# The release workflow runs this; run it yourself to build from a clone, or when your
+# Wine version differs from the one in WINE_VERSION.
 # Usage: scripts/build-wine-dlls.sh [wine-version]     e.g. scripts/build-wine-dlls.sh 11.16
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VER="${1:-$(wine --version | sed 's/^wine-//')}"
+VER="${1:-$(cat "$REPO/WINE_VERSION" 2>/dev/null || wine --version | sed 's/^wine-//')}"
 SERIES="${VER%%.*}.x"
 WORK="${WORK:-$(mktemp -d)}"
 
@@ -14,6 +15,8 @@ command -v x86_64-w64-mingw32-gcc >/dev/null || {
   echo "  Arch:   sudo pacman -S --needed mingw-w64-gcc" >&2
   echo "  Debian: sudo apt install gcc-mingw-w64-x86-64" >&2
   exit 1; }
+
+mkdir -p "$REPO/prebuilt"
 
 echo "==> Building Wine $VER in $WORK"
 cd "$WORK"
@@ -72,6 +75,12 @@ make -j"$(nproc)" dlls/wineusb.sys/wineusb.so >/dev/null
 cp dlls/wineusb.sys/wineusb.so "$REPO/prebuilt/wineusb.so"
 strip "$REPO/prebuilt/wineusb.so" 2>/dev/null || true
 echo "    built wineusb.so (unix half)"
+
+echo "==> Building the USB device tree fixup"
+x86_64-w64-mingw32-gcc -O1 -municode -o "$REPO/prebuilt/usbtree-fixup.exe" \
+  "$REPO/tools/usbtree-fixup.c" -ladvapi32
+x86_64-w64-mingw32-strip "$REPO/prebuilt/usbtree-fixup.exe"
+echo "    built usbtree-fixup.exe"
 
 echo "==> Building the GPU PCI location tool"
 x86_64-w64-mingw32-gcc -O1 -o "$REPO/prebuilt/gpu-pci-fixup.exe" "$REPO/tools/gpu-pci-fixup.c"

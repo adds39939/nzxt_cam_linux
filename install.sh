@@ -3,14 +3,15 @@
 #
 #   curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/install.sh | bash
 #
-# Downloads the CAM installer, creates a patched Wine prefix and installs a launcher.
-# Everything it needs is fetched from the repo; nothing has to be cloned by hand.
+# Downloads the CAM installer and the latest release (which carries the patched Wine
+# binaries, already built), creates a patched Wine prefix and installs a launcher.
+# Nothing has to be cloned or compiled by hand.
 #
 # Non-interactive use (CI, unattended):
 #   WINEPREFIX=~/pfx/nzxt_cam ASSUME_YES=1 bash install.sh
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/adds39939/nzxt_cam_linux.git}"
+RELEASE_TARBALL="${RELEASE_TARBALL:-https://github.com/adds39939/nzxt_cam_linux/releases/latest/download/nzxt-cam-linux.tar.gz}"
 CAM_URL="${CAM_URL:-https://nzxt-app.nzxt.com/NZXT-CAM-Setup.exe}"
 DEFAULT_PREFIX="$HOME/pfx/nzxt_cam"
 
@@ -42,13 +43,13 @@ MISSING=()
 for c in wine winetricks cabextract curl; do
     command -v "$c" >/dev/null || MISSING+=("$c")
 done
-command -v git >/dev/null || command -v tar >/dev/null || MISSING+=("git or tar")
+command -v tar >/dev/null || MISSING+=("tar")
 if [ ${#MISSING[@]} -gt 0 ]; then
     echo "Missing: ${MISSING[*]}" >&2
     echo >&2
-    echo "  Arch:    sudo pacman -S --needed wine winetricks cabextract curl git" >&2
-    echo "  Debian:  sudo apt install wine winetricks cabextract curl git" >&2
-    echo "  Fedora:  sudo dnf install wine winetricks cabextract curl git" >&2
+    echo "  Arch:    sudo pacman -S --needed wine winetricks cabextract curl tar" >&2
+    echo "  Debian:  sudo apt install wine winetricks cabextract curl tar" >&2
+    echo "  Fedora:  sudo dnf install wine winetricks cabextract curl tar" >&2
     die "install the packages above and re-run"
 fi
 
@@ -62,13 +63,7 @@ if ls /sys/bus/pci/devices/*/vendor >/dev/null 2>&1 &&
     warn "  Arch: nvidia-utils   Debian/Ubuntu: nvidia-utils-<version>   Fedora: xorg-x11-drv-nvidia-cuda"
 fi
 
-WINEVER="$(wine --version)"
-echo "    wine: $WINEVER"
-case "$WINEVER" in
-    wine-11.*) ;;
-    *) warn "prebuilt DLLs were built against wine-11.16; on a different major version"
-       warn "run scripts/build-wine-dlls.sh after this finishes" ;;
-esac
+echo "    wine: $(wine --version)"
 
 # ------------------------------------------------------------------- the repo
 
@@ -82,19 +77,24 @@ fi
 
 CLEANUP=""
 if [ -z "$REPO" ]; then
-    say "Fetching $REPO_URL"
+    # The patched Wine binaries are not kept in the repository -- they are built by CI
+    # and attached to each release, so take the release rather than a checkout.
+    say "Fetching the latest release"
     REPO="$(mktemp -d)"; CLEANUP="$REPO"
-    if command -v git >/dev/null; then
-        git clone --depth 1 "$REPO_URL" "$REPO" >/dev/null 2>&1 \
-            || die "could not clone $REPO_URL"
-    else
-        curl -fsSL "${REPO_URL%.git}/archive/refs/heads/main.tar.gz" \
-            | tar xz -C "$REPO" --strip-components=1 \
-            || die "could not download the repository"
-    fi
+    curl -fsSL "$RELEASE_TARBALL" | tar xz -C "$REPO" --strip-components=1 \
+        || die "could not download $RELEASE_TARBALL"
 fi
 trap '[ -n "$CLEANUP" ] && rm -rf "$CLEANUP"' EXIT
-[ -f "$REPO/scripts/setup.sh" ] || die "repository looks incomplete: $REPO"
+[ -f "$REPO/scripts/setup.sh" ] || die "release looks incomplete: $REPO"
+[ -d "$REPO/prebuilt" ] || die "release has no prebuilt/ -- build it with scripts/build-wine-dlls.sh"
+
+# The binaries are built against one Wine version; warn if this machine differs.
+BUILT="$(cat "$REPO/prebuilt/BUILT_AGAINST" 2>/dev/null || cat "$REPO/WINE_VERSION" 2>/dev/null || echo unknown)"
+case "$(wine --version)" in
+    "wine-$BUILT"*) ;;
+    *) warn "these binaries were built against wine-$BUILT, you have $(wine --version)."
+       warn "if anything misbehaves, rebuild with: $REPO/scripts/build-wine-dlls.sh" ;;
+esac
 
 # ----------------------------------------------------------------- the prefix
 
@@ -143,9 +143,13 @@ if confirm "    Install them now with sudo?"; then
     WINEPREFIX="$PREFIX" wineserver -k 2>/dev/null || true
 else
     echo
-    echo "    Skipped. Run this later, or the cooler will not appear:"
-    echo "      sudo $REPO/scripts/install-wine-drivers.sh"
-    [ -n "$CLEANUP" ] && echo "      (clone the repo first -- this copy is temporary)"
+    echo "    Skipped. The cooler will not appear until they are installed."
+    if [ -n "$CLEANUP" ]; then
+        echo "    This copy is temporary, so re-run the installer when you are ready:"
+        echo "      curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/install.sh | bash"
+    else
+        echo "      sudo $REPO/scripts/install-wine-drivers.sh"
+    fi
 fi
 
 say "Done"

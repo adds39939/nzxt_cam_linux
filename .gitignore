@@ -2,3 +2,7 @@
 /build/
 /wine-*/
 tests/test_descriptor_parse
+
+# Built by scripts/build-wine-dlls.sh and attached to each release by CI --
+# not kept in the repository.
+/prebuilt/

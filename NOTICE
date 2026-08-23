@@ -1,22 +1,22 @@
 Third-party components
 ======================
 
-prebuilt/propsys.dll
-prebuilt/windows.devices.enumeration.dll
+The prebuilt/ directory in each release tarball -- the Wine DLLs, hidclass.sys,
+wineusb.sys and wineusb.so.
 
-These are NOT original works of this repository. They are compiled from the
-Wine source tree with the patches in patches/ applied, and are therefore
-derivative works of Wine, licensed under the GNU Lesser General Public
-License version 2.1 or later (LGPL-2.1-or-later).
+These are NOT original works of this repository, and are not kept in it: they
+are built by .github/workflows/release.yaml and attached to each release. They
+are compiled from the Wine source tree with the patches in patches/ applied,
+and are therefore derivative works of Wine, licensed under the GNU Lesser
+General Public License version 2.1 or later (LGPL-2.1-or-later).
 
   Upstream source : https://dl.winehq.org/wine/source/
-  Version         : see prebuilt/BUILT_AGAINST
-  Modifications   : patches/01-propsys-hid-properties.patch
-                    patches/02-devicewatcher-updated-removed.patch
+  Version         : see WINE_VERSION (also prebuilt/BUILT_AGAINST in a release)
+  Modifications   : every patch in patches/
   Rebuild         : scripts/build-wine-dlls.sh
 
 The complete corresponding source is the upstream Wine tarball for the version
-named in prebuilt/BUILT_AGAINST, plus the patches in patches/. Together with
+named in WINE_VERSION, plus the patches in patches/. Together with
 scripts/build-wine-dlls.sh these reproduce the binaries exactly.
 
 A copy of the LGPL-2.1 is available at:

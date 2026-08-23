@@ -18,7 +18,12 @@ DESTDIR="${DESTDIR:-/usr/lib/wine/x86_64-windows}"
 [ -d "$DESTDIR" ] || { echo "not found: $DESTDIR -- set DESTDIR=/path/to/x86_64-windows" >&2; exit 1; }
 
 WINEVER="$(sudo -u "${SUDO_USER:-$USER}" wine --version 2>/dev/null || echo unknown)"
-BUILT="$(cat "$REPO/prebuilt/BUILT_AGAINST" 2>/dev/null || echo unknown)"
+if [ ! -d "$REPO/prebuilt" ]; then
+  echo "No prebuilt/ directory -- run ./scripts/build-wine-dlls.sh first," >&2
+  echo "or install from a release, which ships the binaries." >&2
+  exit 1
+fi
+BUILT="$(cat "$REPO/prebuilt/BUILT_AGAINST" 2>/dev/null || cat "$REPO/WINE_VERSION" 2>/dev/null || echo unknown)"
 [ "$WINEVER" = "wine-$BUILT" ] || {
   echo "WARNING: wine is $WINEVER but drivers were built against $BUILT." >&2
   echo "         Rebuild with scripts/build-wine-dlls.sh before installing." >&2; }

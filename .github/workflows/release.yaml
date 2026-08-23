@@ -1,0 +1,101 @@
+# Build everything in prebuilt/ from source and publish it as a release.
+#
+# Those binaries are the only part of this repo that cannot be used as-is from a
+# checkout: patched Wine DLLs, two Wine drivers and three small PE tools. Building
+# them here means install.sh can fetch a tarball that already contains them, so
+# nobody needs a Wine source tree or a PE cross-compiler to install CAM.
+name: release
+
+on:
+  push:
+    branches: [main]
+    # A release carries binaries, so don't cut one for a docs-only change.
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - '.gitignore'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential flex bison \
+            gcc-mingw-w64-x86-64 \
+            libusb-1.0-0-dev \
+            curl xz-utils patch ca-certificates
+
+      - name: Build everything in prebuilt/
+        run: |
+          version="$(cat WINE_VERSION)"
+          echo "building against wine-$version"
+          ./scripts/build-wine-dlls.sh "$version"
+
+      - name: Check every artefact was produced
+        run: |
+          missing=0
+          for f in \
+            propsys.dll windows.devices.enumeration.dll cfgmgr32.dll winusb.dll \
+            wintypes.dll setupapi.dll windows.devices.usb.dll \
+            hidclass.sys wineusb.sys wineusb.so \
+            usbtree-fixup.exe gpu-pci-fixup.exe cpuidsdk64_shim.dll \
+            BUILT_AGAINST
+          do
+            if [ -s "prebuilt/$f" ]; then
+              printf '  ok      %s\n' "$f"
+            else
+              printf '  MISSING %s\n' "$f"; missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || { echo "build did not produce everything" >&2; exit 1; }
+
+      - name: Assemble the release tarball
+        run: |
+          stage="$(mktemp -d)/nzxt-cam-linux"
+          mkdir -p "$stage"
+          # Everything install.sh, setup.sh and install-wine-drivers.sh need, plus the
+          # sources the binaries were built from so the tarball can rebuild itself.
+          cp -a install.sh scripts patches tools prebuilt \
+                WINE_VERSION README.md LICENSE NOTICE "$stage/"
+          tar czf nzxt-cam-linux.tar.gz -C "$(dirname "$stage")" nzxt-cam-linux
+          ls -lh nzxt-cam-linux.tar.gz
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$(date -u +%Y.%m.%d)-${{ github.run_number }}"
+          wine_version="$(cat WINE_VERSION)"
+
+          {
+            echo "Install or update with:"
+            echo
+            echo '```bash'
+            echo "curl -L https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash"
+            echo '```'
+            echo
+            echo "That downloads NZXT CAM, builds a patched Wine prefix from the tarball"
+            echo "below and installs a \`nzxt-cam\` launcher. It offers to install the two"
+            echo "kernel drivers with \`sudo\` -- without those the cooler is not detected."
+            echo
+            echo "Built against **wine-${wine_version}** from ${{ github.sha }}."
+          } > release-notes.md
+
+          gh release create "$tag" nzxt-cam-linux.tar.gz \
+            --title "$tag" \
+            --notes-file release-notes.md \
+            --latest

@@ -36,6 +36,15 @@ else
 fi
 
 say "Installing patched Wine DLLs into the prefix"
+if [ ! -d "$REPO/prebuilt" ]; then
+  echo "No prebuilt/ directory -- the binaries are not kept in the repository." >&2
+  echo "Either install from a release:" >&2
+  echo "  curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/install.sh | bash" >&2
+  echo "or build them yourself first:" >&2
+  echo "  ./scripts/build-wine-dlls.sh" >&2
+  exit 1
+fi
+
 SYS="$WINEPREFIX/drive_c/windows/system32"
 for d in propsys windows.devices.enumeration windows.devices.usb cfgmgr32 winusb wintypes setupapi; do
   [ -f "$SYS/$d.dll" ] && [ ! -f "$SYS/$d.dll.stock-backup" ] && cp "$SYS/$d.dll" "$SYS/$d.dll.stock-backup"

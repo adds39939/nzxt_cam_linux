@@ -40,9 +40,17 @@ echo "==> configure (a few minutes)"
 relink_native() {           # $1 = dll dir, $2 = output name
   local dir="$1" out="$2"
   make -j"$(nproc)" "dlls/$dir/x86_64-windows/$out" >/dev/null
+  # The link command wraps across backslash-continued lines, so join them: taking
+  # only the first line leaves a trailing "\" and winegcc fails on it.
   local cmd
   cmd=$(make -n "dlls/$dir/x86_64-windows/$out" --always-make 2>/dev/null \
-        | grep -m1 'winegcc -o' || true)
+        | awk '/winegcc -o/ { found = 1 }
+               found {
+                 continues = ($0 ~ /\\[ \t]*$/)
+                 gsub(/\\[ \t]*$/, "")
+                 printf "%s ", $0
+                 if (!continues) { print ""; exit }
+               }')
   if [ -z "$cmd" ]; then echo "could not recover link command for $out" >&2; exit 1; fi
   cmd=${cmd//-Wl,--wine-builtin /}
   cmd=${cmd/-o dlls\/$dir\/x86_64-windows\/$out/-o $REPO/prebuilt/$out}

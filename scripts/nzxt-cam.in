@@ -3,20 +3,24 @@
 export WINEPREFIX="__PREFIX__"
 
 # Wine's PnP manager rebuilds the device tree (and rewrites DEVPKEY_Device_Parent)
-# every time the server starts, so the USB composite-device fixup has to be applied
-# after enumeration and before CAM looks for its device. Give plugplay a moment to
-# settle first, otherwise the interfaces are not in the registry yet.
-FIXUP="$WINEPREFIX/drive_c/windows/system32/usbtree-fixup.exe"
-if [ -f "$FIXUP" ]; then
-  wine cmd /c exit >/dev/null 2>&1
-  sleep 3
-  wine "$FIXUP" >/dev/null 2>&1
-fi
+# every time the server starts, so these have to be re-applied after enumeration and
+# before CAM looks for its device -- including after the restart below, which stops
+# the server. Give plugplay a moment to settle first, otherwise the interfaces are
+# not in the registry yet.
+apply_device_fixups() {
+  local fixup="$WINEPREFIX/drive_c/windows/system32/usbtree-fixup.exe"
+  local gpufix="$WINEPREFIX/drive_c/windows/system32/gpu-pci-fixup.exe"
 
-# Wine registers the GPU but leaves its PCI location unset, and CAM drops any
-# adapter whose BusNumber/Address it cannot read. Fill them in from the host.
-GPUFIX="$WINEPREFIX/drive_c/windows/system32/gpu-pci-fixup.exe"
-[ -f "$GPUFIX" ] && wine "$GPUFIX" >/dev/null 2>&1
+  if [ -f "$fixup" ]; then
+    wine cmd /c exit >/dev/null 2>&1
+    sleep 3
+    wine "$fixup" >/dev/null 2>&1
+  fi
+
+  # Wine registers the GPU but leaves its PCI location unset, and CAM drops any
+  # adapter whose BusNumber/Address it cannot read. Fill them in from the host.
+  [ -f "$gpufix" ] && wine "$gpufix" >/dev/null 2>&1
+}
 
 # Scaling goes through Wine's DPI, which Chromium reports as its device pixel ratio;
 # setup.sh sets it from the desktop scale. NZXT_CAM_SCALE re-points it here.
@@ -73,6 +77,7 @@ cd "$WINEPREFIX/drive_c/Program Files/NZXT CAM" || exit 1
 attempt=0
 while :; do
   reset_fatal_route
+  apply_device_fixups
 
   # Only look at log lines this run appends, not a previous session's.
   offset=0

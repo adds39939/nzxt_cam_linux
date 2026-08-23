@@ -153,10 +153,12 @@ Wine DPI (LogPixels) = 120         cam.log = 4600,     device detected, DPR 1.25
 
 ## Won't implement
 
-* 🚫 **Capture Card.** The page kills the Electron renderer under Wine
-  (`0xC0000409`). Since CAM restores the last page on launch, one click used to leave
-  the app stuck on a blank screen permanently -- the launcher now resets that route, so
-  it can always be recovered by relaunching. Making capture itself work is out of scope.
+* 🚫 **Capture Card.** The page kills CAM's renderer under Wine (`0xC0000409`): it
+  needs a COM class Wine does not implement. Since CAM restores the last page on launch
+  and gives up after two crashes, one click used to leave the app blank permanently.
+  The launcher now guards it from both sides -- it resets that route before starting,
+  and watches for CAM's own crash-threshold message so a click during the session
+  restarts the app on the dashboard by itself. Making capture *work* is out of scope.
 
 ## Wine version compatibility
 

@@ -34,11 +34,12 @@ The prefix defaults to `~/pfx/nzxt_cam`; override with `WINEPREFIX=... ./scripts
 | UI, navigation, all pages | CPU / motherboard **temperatures** |
 | CPU load %, clock | Motherboard **fan** speeds and control |
 | RAM usage | **GPU** monitoring (`No supported graphics cards`) |
-| Network throughput | Kraken **LCD** (see *Remaining work*) |
-| Per-process CPU/RAM/net table | Firmware update (untested) |
+| Network throughput | Firmware update (untested) |
+| Per-process CPU/RAM/net table | |
 | Lighting / Cooling / Audio pages render | |
 | **Kraken Elite V2 detection** (`1e71:3012`) | |
 | **Pump / fan curve control** on the Kraken | |
+| **Kraken LCD** — live frames to the display | |
 
 **Sensors will never work under Wine.** CAM reads them through a kernel driver
 (`cpuz162`, `cam_driver_mb.sys`). Wine has no kernel driver support, so you'll see:
@@ -415,6 +416,40 @@ interfaces of a composite device rather than its parent (that one belongs to
 usbccgp), and never on a HID interface, which winebus and hidclass drive. Registering
 it everywhere makes CAM find three devices where it expects one.
 
+### 19. `Windows.Devices.Usb` was entirely unimplemented
+
+The LCD is not driven over raw WinUSB. CAM activates the **WinRT** `UsbDevice` class
+and streams frames through it, and every method in Wine's `windows.devices.usb` was a
+stub returning `E_NOTIMPL` — the DLL was 236 lines with no `UsbDevice` object at all.
+
+`patches/19-…` implements the object graph the LCD path needs:
+
+```
+UsbDevice.FromIdAsync(id)          opens the interface, WinUsb_Initialize
+  └── Configuration
+        └── UsbInterfaces[0]
+              ├── BulkOutPipes[]   -> OutputStream.WriteAsync -> WinUsb_WritePipe
+              └── BulkInPipes[]    -> InputStream.ReadAsync   -> WinUsb_ReadPipe
+```
+
+Supporting pieces: the standard Wine async-operation helper (including the
+`IAsyncOperationWithProgress` variants the stream methods return), a vector for the
+collection properties, and `IIterable`/`IIterator` declarations added to
+`windows.devices.usb.idl` — only `IVectorView` was declared, so projections that
+iterate the collections could not resolve the parameterized IIDs.
+
+Two smaller gaps fell out of it: `winusb` had no `IMPORTLIB`, so nothing could link
+against it, and `wine/wineusb.h` (added by patch 8) was never listed in
+`include/Makefile.in`, which breaks the build as soon as the makefiles are regenerated.
+
+With this in place the LCD streams for real — 20-byte command headers alternating
+with 1228800-byte frames, exactly 640 x 480 x 4:
+
+```
+WinUsb_WritePipe pipe 0x2, length 20
+WinUsb_WritePipe pipe 0x2, length 1228800
+```
+
 ## The USB device tree
 
 CAM correlates a HID interface with its WinUSB sibling by walking up to the USB hub
@@ -454,25 +489,12 @@ wine ~/.../system32/usbtree-fixup.exe -v
 
 ## Remaining work
 
-- **LCD: needs the WinRT `Windows.Devices.Usb` API implemented.** After fix 18 the
-  device interface lookup succeeds and CAM retrieves the device's ID, then activates
-  `Windows.Devices.Usb.UsbDevice` and calls `UsbDevice.FromIdAsync` — the LCD is
-  driven through WinRT, not through raw WinUSB. Every method in Wine's
-  `dlls/windows.devices.usb` is a stub returning `E_NOTIMPL`:
-
-  ```c
-  static HRESULT WINAPI usb_device_statics_FromIdAsync( IUsbDeviceStatics *iface, ... )
-  {
-      FIXME( ... );
-      return E_NOTIMPL;
-  }
-  ```
-
-  This is a much larger job than the gaps above: `UsbDevice`, `UsbConfiguration`,
-  `UsbInterface`, the bulk pipe classes and their `IInputStream`/`IOutputStream`
-  plumbing all have to exist before a single frame reaches the screen. The WinUSB
-  layer underneath it (patches 8, 10) is already working, so it is a matter of
-  building the WinRT surface on top rather than any further kernel work.
+- **Firmware update:** untested. CAM ships `firmware-update.exe` and
+  `rvclib-fw-updater.exe` as separate binaries, so this may exercise paths none of
+  the work above touches.
+- The WinRT USB implementation covers what the LCD needs. `SendControlOutTransferAsync`,
+  the endpoint-descriptor properties, interrupt pipes and `UsbConfiguration`'s
+  descriptor accessors are still stubs; nothing in CAM's LCD path calls them.
 - **Firmware update:** untested.
 - Unrelated bug spotted while reading `dlls/wintypes/map.c`: `map_entry_clear` calls
   `IInspectable_AddRef` on the value it is about to drop, where it should `Release`.

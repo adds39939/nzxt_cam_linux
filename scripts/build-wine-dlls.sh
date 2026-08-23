@@ -62,6 +62,7 @@ relink_native cfgmgr32                     cfgmgr32.dll
 relink_native winusb                       winusb.dll
 relink_native wintypes                     wintypes.dll
 relink_native setupapi                     setupapi.dll
+relink_native windows.devices.usb          windows.devices.usb.dll
 build_driver  hidclass.sys                 hidclass.sys
 build_driver  wineusb.sys                  wineusb.sys
 

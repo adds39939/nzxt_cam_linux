@@ -1,5 +1,5 @@
 --- dlls/wineusb.sys/wineusb.c.orig	2026-08-23 04:00:06.014058475 +0100
-+++ dlls/wineusb.sys/wineusb.c	2026-08-23 04:20:09.239930888 +0100
++++ dlls/wineusb.sys/wineusb.c	2026-08-23 04:56:03.426434468 +0100
 @@ -24,6 +24,7 @@
  #include <stdint.h>
  #include <stdlib.h>
@@ -138,7 +138,7 @@
      NTSTATUS status;
  
      TRACE("type %#x.\n", urb->UrbHeader.Function);
-@@ -630,6 +701,161 @@
+@@ -630,6 +701,160 @@
      return STATUS_NOT_IMPLEMENTED;
  }
  
@@ -201,8 +201,7 @@
 +
 +            urb->UrbHeader.Function = URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER;
 +            urb->UrbHeader.Length = sizeof(*r);
-+            r->PipeHandle = make_pipe_handle(req->endpoint,
-+                    (req->endpoint & 0x80) ? UsbdPipeTypeBulk : UsbdPipeTypeBulk);
++            r->PipeHandle = make_pipe_handle(req->endpoint, req->pipe_type);
 +            r->TransferFlags = (req->flags & WINEUSB_TRANSFER_IN) ? USBD_TRANSFER_DIRECTION_IN : 0;
 +            r->TransferBufferLength = req->transfer_length;
 +            r->TransferBuffer = req->transfer_length ? buffer : NULL;
@@ -229,7 +228,7 @@
 +
 +            urb->UrbHeader.Function = URB_FUNCTION_SYNC_RESET_PIPE_AND_CLEAR_STALL;
 +            urb->UrbHeader.Length = sizeof(*r);
-+            r->PipeHandle = make_pipe_handle(req->endpoint, UsbdPipeTypeBulk);
++            r->PipeHandle = make_pipe_handle(req->endpoint, req->pipe_type);
 +            break;
 +        }
 +
@@ -300,7 +299,7 @@
  static NTSTATUS WINAPI driver_internal_ioctl(DEVICE_OBJECT *device_obj, IRP *irp)
  {
      IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
-@@ -654,7 +880,8 @@
+@@ -654,7 +879,8 @@
      switch (code)
      {
          case IOCTL_INTERNAL_USB_SUBMIT_URB:
@@ -310,7 +309,7 @@
              break;
  
          default:
-@@ -710,6 +937,7 @@
+@@ -710,6 +936,7 @@
      driver->DriverExtension->AddDevice = driver_add_device;
      driver->DriverUnload = driver_unload;
      driver->MajorFunction[IRP_MJ_PNP] = driver_pnp;

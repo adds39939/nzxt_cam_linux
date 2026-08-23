@@ -44,7 +44,8 @@
 +    UCHAR request;          /* control: bRequest */
 +    UCHAR descriptor_type;  /* descriptor: wValue high byte */
 +    UCHAR descriptor_index; /* descriptor: wValue low byte */
-+    UCHAR pad[3];
++    UCHAR pipe_type;        /* USBD_PIPE_TYPE for bulk/interrupt transfers */
++    UCHAR pad[2];
 +    USHORT value;           /* control: wValue */
 +    USHORT index;           /* control/descriptor: wIndex */
 +};
@@ -157,7 +158,7 @@
 +@ stdcall WinUsb_SetPowerPolicy(ptr long long ptr)
 +@ stdcall WinUsb_WritePipe(ptr long ptr long ptr ptr)
 --- dlls/winusb/main.c.orig	2026-08-23 04:10:10.483339656 +0100
-+++ dlls/winusb/main.c	2026-08-23 04:21:35.243043900 +0100
++++ dlls/winusb/main.c	2026-08-23 04:56:03.433560775 +0100
 @@ -1,4 +1,6 @@
  /*
 + * WinUSB implementation on top of wineusb.sys.
@@ -165,7 +166,7 @@
   * Copyright (C) 2022 Mohamad Al-Jaf
   *
   * This library is free software; you can redistribute it and/or
-@@ -17,20 +19,502 @@
+@@ -17,20 +19,528 @@
   */
  
  #include <stdarg.h>
@@ -496,6 +497,30 @@
 +    return ret;
 +}
 +
++/* Endpoints may be bulk or interrupt; the Unix backend picks the libusb transfer
++ * type from the pipe handle, so report the real one. */
++static UCHAR pipe_type_for_endpoint( struct winusb_handle *device, UCHAR endpoint )
++{
++    ULONG pos = 0;
++
++    while (pos + 2 <= device->config_len)
++    {
++        const UCHAR *desc = device->config + pos;
++        UCHAR length = desc[0], type = desc[1];
++
++        if (!length || pos + length > device->config_len) break;
++        if (type == USB_ENDPOINT_DESCRIPTOR_TYPE)
++        {
++            const USB_ENDPOINT_DESCRIPTOR *ep = (const USB_ENDPOINT_DESCRIPTOR *)desc;
++
++            if (ep->bEndpointAddress == endpoint)
++                return (ep->bmAttributes & 3) == 3 ? UsbdPipeTypeInterrupt : UsbdPipeTypeBulk;
++        }
++        pos += length;
++    }
++    return UsbdPipeTypeBulk;
++}
++
 +static BOOL transfer_pipe( WINUSB_INTERFACE_HANDLE handle, UCHAR pipe_id, PUCHAR buffer,
 +                           ULONG length, PULONG transferred, LPOVERLAPPED overlapped, BOOL in )
 +{
@@ -513,6 +538,7 @@
 +
 +    req.type = WINEUSB_URB_BULK;
 +    req.endpoint = pipe_id;
++    req.pipe_type = pipe_type_for_endpoint( device, pipe_id );
 +    if (in) req.flags |= WINEUSB_TRANSFER_IN;
 +
 +    ret = submit_urb( device, &req, buffer, &len );
@@ -554,7 +580,8 @@
 +}
 +
 +static BOOL pipe_request( WINUSB_INTERFACE_HANDLE handle, UCHAR pipe_id, ULONG type )
-+{
+ {
+-    FIXME( "(%p) - stub\n", handle );
 +    struct winusb_handle *device = handle;
 +    struct wineusb_urb_request req = {0};
 +    ULONG len = 0;
@@ -566,6 +593,7 @@
 +    }
 +    req.type = type;
 +    req.endpoint = pipe_id;
++    req.pipe_type = pipe_type_for_endpoint( device, pipe_id );
 +    return submit_urb( device, &req, NULL, &len );
 +}
 +
@@ -584,12 +612,11 @@
 +BOOL WINAPI WinUsb_FlushPipe( WINUSB_INTERFACE_HANDLE handle, UCHAR pipe_id )
 +{
 +    TRACE( "handle %p, pipe %#x.\n", handle, pipe_id );
-+    return TRUE;
-+}
+     return TRUE;
+ }
 +
 +BOOL WINAPI WinUsb_GetCurrentAlternateSetting( WINUSB_INTERFACE_HANDLE handle, PUCHAR setting )
- {
--    FIXME( "(%p) - stub\n", handle );
++{
 +    struct winusb_handle *device = handle;
 +
 +    TRACE( "handle %p, setting %p.\n", handle, setting );
@@ -632,8 +659,8 @@
 +{
 +    FIXME( "handle %p, pipe %#x, policy %#lx: stub.\n", handle, pipe_id, policy );
 +    if (length && value && *length >= sizeof(ULONG)) memset( value, 0, sizeof(ULONG) );
-     return TRUE;
- }
++    return TRUE;
++}
 +
 +BOOL WINAPI WinUsb_SetPowerPolicy( WINUSB_INTERFACE_HANDLE handle, ULONG policy, ULONG length, PVOID value )
 +{

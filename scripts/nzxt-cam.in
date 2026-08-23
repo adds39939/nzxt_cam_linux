@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Launch NZXT CAM in its patched Wine prefix.
+export WINEPREFIX="__PREFIX__"
+cd "$WINEPREFIX/drive_c/Program Files/NZXT CAM" || exit 1
+exec wine "NZXT CAM.exe" "$@"

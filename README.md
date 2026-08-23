@@ -87,8 +87,9 @@ Wine DPI (LogPixels) = 120         cam.log = 4600,     device detected, DPR 1.25
 |---|---|
 | UI, navigation, all pages | Motherboard **fan** speeds and control |
 | **CPU temperature** (via the CPUID shim) | Motherboard **temperatures** |
-| **CPU clock**, load %, model, codename, socket | **GPU** monitoring (`No supported graphics cards`) |
-| RAM usage | Firmware update (untested) |
+| **CPU clock**, load %, model, codename, socket | **GPU** temperature / clock / fan readings |
+| **GPU detected** as a device (readings still `n/a`) | Firmware update (untested) |
+| RAM usage | |
 | Network throughput | |
 | Per-process CPU/RAM/net table | |
 | Lighting / Cooling / Audio pages render | |
@@ -591,33 +592,47 @@ the surface above was identified.
 With the shim, `Temperature` and `Clock` read correctly and CAM offers **CPU
 Temperature** next to Liquid Temperature as a pump/fan curve source and on the LCD.
 
+### 21. Display adapters had no PCI location, so CAM skipped every GPU
+
+CAM reported `No supported graphics cards were found` on a machine where Wine itself
+identifies the card perfectly: `EnumDisplayDevicesW` returns `NVIDIA GeForce RTX 5090`
+with the right `PCI\VEN_10DE&DEV_2B85` id.
+
+The GPU is not found through DXGI (a `CreateDXGIFactory1` hook inside `index.node`
+never fires, and making wined3d report a card Wine recognises changes nothing) and not
+through display enumeration either. `cam_helper` walks display adapters and, for each
+one, asks `CM_Get_DevNode_PropertyW` for `DEVPKEY_Device_BusNumber` and
+`DEVPKEY_Device_Address`. Wine registers the GPU device node but leaves both unset, so
+the first call returns `CR_NO_SUCH_VALUE`, the adapter is abandoned, and the D3DKMT
+code that would query it is never even reached -- `gdi32` is never so much as loaded.
+
+Wine's cfgmgr32 maps those two property keys onto the legacy registry values
+`BusNumber` and `Address` on the device node, so no code change is needed: filling
+them in is enough. `tools/gpu-pci-fixup.c` matches the PCI ids in each Windows
+instance id against `/sys/bus/pci/devices` and writes the address the kernel reports
+(plus `LocationInformation`). The launcher runs it before CAM starts.
+
+With that, `cam_helper` loads `gdi32`, resolves `D3DKMTOpenAdapterFromDeviceName`,
+`D3DKMTQueryAdapterInfo` and `D3DKMTQueryStatistics`, and CAM registers a **GPU**
+device -- `monitoring.rs` switches from the `GPUs: none identified` warning to listing
+the adapter.
+
 ## Remaining work
 
-- **GPU monitoring.** Not finished. Mapped far enough to say exactly what blocks it,
-  and to rule out the obvious approaches.
+- **GPU readings.** The GPU is now *detected* (fix #21) and appears as a device, but
+  its Temperature / Clock / Fan / Load still read `n/a`. Those come from a CPUID SDK
+  device of class `0x20`, which `cam_helper` matches to the GPU record it built from
+  D3DKMT. Synthesising a class-`0x20` device is accepted as far as the match, which
+  then requires the GPU record's `+0x38 == 1` and `+0x3c` to equal a per-GPU ordinal;
+  that has not been satisfied yet. Once matched, `cam_helper` reads sensor classes
+  `0x3000` (fan) and `0xf000` from it, so the shim would then supply them from
+  `nvidia-smi`/NVML.
 
-  It does **not** come from DXGI: a hook on `CreateDXGIFactory1` inside `index.node`
-  never fires, and forcing wined3d to report a card Wine recognises (`VideoPciDeviceID`,
-  which is silently ignored unless the id is in wined3d's table -- the RTX 5090 is not,
-  so it falls back to a GTX 470) still yields `GPUs: none identified`. It does not come
-  from display enumeration either: cam-core *does* see `NVIDIA GeForce RTX 5090` with
-  the right PCI id from `EnumDisplayDevicesW`, and still reports none.
-
-  It comes from `cam_helper`'s system info, which is built entirely from the CPUID SDK.
-  `cam_helper` walks the SDK device list and dispatches on device class:
-
-  | class | device | sensor classes it then reads |
-  |---|---|---|
-  | `0x4` | CPU | `0x2000` temperature, `0x5000` power |
-  | `0x400` | mainboard | `0x3000` fan |
-  | `0x20` | third consumer | `0x3000` fan |
-
-  Without the driver the SDK's device list holds only the mainboard, the CPU and the
-  network interfaces (class `0x200`), so the `0x20` branch never runs. Synthesising a
-  device of that class is not enough on its own: the handler also requires a matching
-  entry in a separate list of `0x118`-byte records, counted by `e9bbd377` (vtable
-  `+0x6f8`) and fetched by `5cf8b9f1` (`+0x7c0`), matching on the record's `+0x3c`
-  field with `+0x38 == 1`. That list is also empty without the driver.
+  Also unimplemented in Wine and worth doing properly: `D3DKMTQueryStatistics` is a
+  stub that returns success without filling anything, and `D3DKMTQueryAdapterInfo`
+  handles only two of the `KMTQAITYPE_*` queries. `KMTQAITYPE_ADAPTERADDRESS` (6) is
+  the one CAM needs; the shim serves it, but `KMTQAITYPE_ADAPTERPERFDATA` carries GPU
+  temperature, fan RPM and power and would be the natural home for that data.
 
 - **Motherboard fans and temperatures.** Second driver (`cam_driver_mb.sys`), reached
   through the same SDK; the sensor getter (`ac2b5856`) is decoded but the fan class

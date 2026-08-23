@@ -73,6 +73,11 @@ cp dlls/wineusb.sys/wineusb.so "$REPO/prebuilt/wineusb.so"
 strip "$REPO/prebuilt/wineusb.so" 2>/dev/null || true
 echo "    built wineusb.so (unix half)"
 
+echo "==> Building the GPU PCI location tool"
+x86_64-w64-mingw32-gcc -O1 -o "$REPO/prebuilt/gpu-pci-fixup.exe" "$REPO/tools/gpu-pci-fixup.c"
+x86_64-w64-mingw32-strip "$REPO/prebuilt/gpu-pci-fixup.exe"
+echo "    built gpu-pci-fixup.exe"
+
 echo "==> Building the CPUID SDK shim"
 x86_64-w64-mingw32-gcc -O1 -shared -o "$REPO/prebuilt/cpuidsdk64_shim.dll" \
   "$REPO/tools/cpuid-shim/shim.c" "$REPO/tools/cpuid-shim/thunks.S" -loleaut32

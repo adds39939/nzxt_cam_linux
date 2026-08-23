@@ -13,6 +13,11 @@ if [ -f "$FIXUP" ]; then
   wine "$FIXUP" >/dev/null 2>&1
 fi
 
+# Wine registers the GPU but leaves its PCI location unset, and CAM drops any
+# adapter whose BusNumber/Address it cannot read. Fill them in from the host.
+GPUFIX="$WINEPREFIX/drive_c/windows/system32/gpu-pci-fixup.exe"
+[ -f "$GPUFIX" ] && wine "$GPUFIX" >/dev/null 2>&1
+
 # Scaling goes through Wine's DPI, which Chromium reports as its device pixel ratio;
 # setup.sh sets it from the desktop scale. NZXT_CAM_SCALE re-points it here.
 #

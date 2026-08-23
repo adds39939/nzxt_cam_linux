@@ -43,6 +43,7 @@ for d in propsys windows.devices.enumeration windows.devices.usb cfgmgr32 winusb
   wine reg add 'HKCU\Software\Wine\DllOverrides' /v "$d" /t REG_SZ /d native /f >/dev/null 2>&1
 done
 cp "$REPO/prebuilt/usbtree-fixup.exe" "$SYS/usbtree-fixup.exe"
+cp "$REPO/prebuilt/gpu-pci-fixup.exe" "$SYS/gpu-pci-fixup.exe"
 
 # Match Wine's DPI to the desktop scale so window chrome and dialogs are not tiny on
 # a scaled display. The Electron renderer is scaled separately by the launcher.

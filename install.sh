@@ -52,6 +52,16 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     die "install the packages above and re-run"
 fi
 
+# Sensor readings come from Linux. CPU needs nothing extra (kernel hwmon/cpufreq);
+# the GPU needs nvidia-smi, which is optional -- without it CAM still detects the GPU
+# and everything else works, its readings just stay n/a.
+if ls /sys/bus/pci/devices/*/vendor >/dev/null 2>&1 &&
+   grep -qx 0x10de /sys/bus/pci/devices/*/vendor 2>/dev/null &&
+   ! command -v nvidia-smi >/dev/null 2>&1; then
+    warn "NVIDIA GPU found but nvidia-smi is missing -- GPU readings will show n/a."
+    warn "  Arch: nvidia-utils   Debian/Ubuntu: nvidia-utils-<version>   Fedora: xorg-x11-drv-nvidia-cuda"
+fi
+
 WINEVER="$(wine --version)"
 echo "    wine: $WINEVER"
 case "$WINEVER" in

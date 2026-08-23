@@ -37,7 +37,7 @@ fi
 
 say "Installing patched Wine DLLs into the prefix"
 SYS="$WINEPREFIX/drive_c/windows/system32"
-for d in propsys windows.devices.enumeration cfgmgr32 winusb; do
+for d in propsys windows.devices.enumeration cfgmgr32 winusb wintypes setupapi; do
   [ -f "$SYS/$d.dll" ] && [ ! -f "$SYS/$d.dll.stock-backup" ] && cp "$SYS/$d.dll" "$SYS/$d.dll.stock-backup"
   cp "$REPO/prebuilt/$d.dll" "$SYS/$d.dll"
   wine reg add 'HKCU\Software\Wine\DllOverrides' /v "$d" /t REG_SZ /d native /f >/dev/null 2>&1

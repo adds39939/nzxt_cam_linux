@@ -1,0 +1,278 @@
+--- dlls/cfgmgr32/cfgmgr32_private.h.orig
++++ dlls/cfgmgr32/cfgmgr32_private.h
+@@ -65,6 +65,18 @@
+ 
+ extern LSTATUS init_property( struct property *prop, const DEVPROPKEY *key, DEVPROPTYPE *type, void *buffer, DWORD *size, BOOL binary );
+ 
++struct device
++{
++    WCHAR enumerator[MAX_PATH];
++    WCHAR device[MAX_PATH];
++    WCHAR instance[MAX_PATH];
++};
++
++extern LSTATUS init_device( struct device *dev, const WCHAR *name );
++extern LSTATUS open_device_key( HKEY root, const struct device *dev, REGSAM access, BOOL open, HKEY *hkey );
++extern LSTATUS query_device_property( HKEY hkey, const struct device *dev, struct property *prop );
++extern LSTATUS enum_device_property_keys( HKEY hkey, const struct device *dev, DEVPROPKEY *buffer, ULONG *size );
++
+ struct device_interface
+ {
+     GUID class_guid;
+--- dlls/cfgmgr32/cfgmgr32.c.orig
++++ dlls/cfgmgr32/cfgmgr32.c
+@@ -577,14 +577,7 @@
+     return err;
+ }
+ 
+-struct device
+-{
+-    WCHAR enumerator[MAX_PATH];
+-    WCHAR device[MAX_PATH];
+-    WCHAR instance[MAX_PATH];
+-};
+-
+-static LSTATUS init_device( struct device *dev, const WCHAR *name )
++LSTATUS init_device( struct device *dev, const WCHAR *name )
+ {
+     WCHAR *tmp;
+ 
+@@ -600,7 +593,7 @@
+     return ERROR_SUCCESS;
+ }
+ 
+-static LSTATUS open_device_key( HKEY root, const struct device *dev, REGSAM access, BOOL open, HKEY *hkey )
++LSTATUS open_device_key( HKEY root, const struct device *dev, REGSAM access, BOOL open, HKEY *hkey )
+ {
+     WCHAR path[MAX_PATH];
+     UINT len;
+@@ -723,10 +716,20 @@
+     { &DEVPKEY_Device_SafeRemovalRequiredOverride,  DEVPROP_TYPE_BOOLEAN },
+ };
+ 
+-static LSTATUS query_device_property( HKEY hkey, const struct device *dev, struct property *prop )
++LSTATUS query_device_property( HKEY hkey, const struct device *dev, struct property *prop )
+ {
+     if (!memcmp( &DEVPKEY_Device_InstanceId, &prop->key, sizeof(prop->key) ))
+-        return return_property_string( prop, dev->instance );
++    {
++        WCHAR id[MAX_DEVICE_ID_LEN];
++        UINT len;
++
++        /* The instance ID is the full <enumerator>\\<device>\\<instance> path, not just
++         * the trailing instance component. */
++        len = swprintf( id, ARRAY_SIZE(id), L"%s", dev->enumerator );
++        if (*dev->device) len += swprintf( id + len, ARRAY_SIZE(id) - len, L"\\%s", dev->device );
++        if (*dev->instance) swprintf( id + len, ARRAY_SIZE(id) - len, L"\\%s", dev->instance );
++        return return_property_string( prop, id );
++    }
+ 
+     for (UINT i = 0; i < ARRAY_SIZE(device_properties); i++)
+     {
+@@ -2086,13 +2089,54 @@
+     return CM_Get_DevNode_Property_Keys_Ex( node, keys, count, flags, NULL );
+ }
+ 
++
++/* Read a DEVPROP_TYPE_STRING_LIST device property into a newly allocated buffer. */
++static WCHAR *devnode_get_string_list_prop( DEVINST node, const DEVPROPKEY *key )
++{
++    struct device dev;
++    struct property prop;
++    DEVPROPTYPE type;
++    WCHAR *buffer;
++    DWORD size = 0;
++
++    if (devnode_get_device( node, &dev )) return NULL;
++    if (init_property( &prop, key, &type, NULL, &size, TRUE )) return NULL;
++    if (get_device_property( HKEY_LOCAL_MACHINE, &dev, &prop ) != ERROR_MORE_DATA || !size) return NULL;
++
++    if (!(buffer = malloc( size + 2 * sizeof(WCHAR) ))) return NULL;
++    memset( buffer, 0, size + 2 * sizeof(WCHAR) );
++    if (init_property( &prop, key, &type, (BYTE *)buffer, &size, TRUE ) ||
++        get_device_property( HKEY_LOCAL_MACHINE, &dev, &prop ))
++    {
++        free( buffer );
++        return NULL;
++    }
++    return buffer;
++}
++
++
+ /***********************************************************************
+  *             CM_Get_Child_Ex  (cfgmgr32.@)
+  */
+ CONFIGRET WINAPI CM_Get_Child_Ex( DEVINST *child, DEVINST node, ULONG flags, HMACHINE machine )
+ {
+-    FIXME( "child %p, node %#lx, flags %#lx, machine %p stub!\n", child, node, flags, machine );
+-    return CR_SUCCESS;
++    struct device dev;
++    WCHAR *children;
++    CONFIGRET ret;
++
++    TRACE( "child %p, node %#lx, flags %#lx, machine %p\n", child, node, flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++    if (flags) FIXME( "flags %#lx not implemented!\n", flags );
++
++    if (!child) return CR_INVALID_POINTER;
++    *child = 0;
++
++    if (devnode_get_device( node, &dev )) return CR_INVALID_DEVNODE;
++    if (!(children = devnode_get_string_list_prop( node, &DEVPKEY_Device_Children ))) return CR_NO_SUCH_DEVNODE;
++
++    ret = *children ? CM_Locate_DevNodeW( child, children, 0 ) : CR_NO_SUCH_DEVNODE;
++    free( children );
++    return ret;
+ }
+ 
+ /***********************************************************************
+@@ -2126,8 +2170,21 @@
+  */
+ CONFIGRET WINAPI CM_Get_DevNode_Status_Ex( ULONG *status, ULONG *problem, DEVINST node, ULONG flags, HMACHINE machine )
+ {
+-    FIXME( "status %p, problem %p, node %#lx, flags %#lx, machine %p stub!\n", status, problem,
++    struct device dev;
++
++    TRACE( "status %p, problem %p, node %#lx, flags %#lx, machine %p\n", status, problem,
+            node, flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++    if (flags) FIXME( "flags %#lx not implemented!\n", flags );
++
++    if (!status || !problem) return CR_INVALID_POINTER;
++    if (devnode_get_device( node, &dev )) return CR_INVALID_DEVNODE;
++
++    /* We have no way to tell a stopped device from a running one; report the
++     * common "started, driver loaded" state so callers do not treat the device
++     * as absent or faulted. */
++    *status = DN_DRIVER_LOADED | DN_ENUM_LOADED | DN_STARTED | DN_DISABLEABLE;
++    *problem = 0;
+     return CR_SUCCESS;
+ }
+ 
+@@ -2144,8 +2201,31 @@
+  */
+ CONFIGRET WINAPI CM_Get_Sibling_Ex( DEVINST *sibling, DEVINST node, ULONG flags, HMACHINE machine )
+ {
+-    FIXME( "sibling %p, node %#lx, flags %#lx, machine %p stub!\n", sibling, node, flags, machine );
+-    return CR_FAILURE;
++    WCHAR id[MAX_DEVICE_ID_LEN], *children, *p;
++    CONFIGRET ret;
++    DEVINST parent;
++
++    TRACE( "sibling %p, node %#lx, flags %#lx, machine %p\n", sibling, node, flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++    if (flags) FIXME( "flags %#lx not implemented!\n", flags );
++
++    if (!sibling) return CR_INVALID_POINTER;
++    *sibling = 0;
++
++    if ((ret = CM_Get_Device_ID_ExW( node, id, ARRAY_SIZE(id), 0, machine ))) return ret;
++    if ((ret = CM_Get_Parent_Ex( &parent, node, 0, machine ))) return ret;
++    if (!(children = devnode_get_string_list_prop( parent, &DEVPKEY_Device_Children ))) return CR_NO_SUCH_DEVNODE;
++
++    ret = CR_NO_SUCH_DEVNODE;
++    for (p = children; *p; p += wcslen( p ) + 1)
++    {
++        if (wcsicmp( p, id )) continue;
++        p += wcslen( p ) + 1;
++        if (*p) ret = CM_Locate_DevNodeW( sibling, p, 0 );
++        break;
++    }
++    free( children );
++    return ret;
+ }
+ 
+ /***********************************************************************
+--- dlls/cfgmgr32/devobject.c.orig
++++ dlls/cfgmgr32/devobject.c
+@@ -1128,6 +1128,58 @@
+     return DevGetObjectPropertiesEx( type, id, flags, props_len, props, 0, NULL, buf_len, buf );
+ }
+ 
++
++static LSTATUS copy_device_property( HKEY hkey, const struct device *dev, DEVPROPERTY *property )
++{
++    struct property prop;
++    LSTATUS err;
++
++    init_property( &prop, &property->CompKey.Key, &property->Type, property->Buffer, &property->BufferSize, TRUE );
++    if (!(err = query_device_property( hkey, dev, &prop ))) return ERROR_SUCCESS;
++    if (err && err != ERROR_MORE_DATA) return ERROR_SUCCESS;
++
++    if (!(prop.buffer = malloc( property->BufferSize ))) return ERROR_OUTOFMEMORY;
++    if ((err = query_device_property( hkey, dev, &prop ))) free( prop.buffer );
++    else property->Buffer = prop.buffer;
++
++    return err;
++}
++
++static LSTATUS copy_device_properties( HKEY hkey, const struct device *dev, const DEVPROPCOMPKEY *keys, ULONG keys_len,
++                                       DEVPROPERTY *properties, ULONG *props_len )
++{
++    const DEVPROPCOMPKEY *key, *end;
++    DEVPROPERTY *prop = properties;
++    LSTATUS err = ERROR_SUCCESS;
++
++    for (key = keys, end = keys + keys_len; !err && key < end; key++, prop++)
++    {
++        prop->CompKey = *key;
++        err = copy_device_property( hkey, dev, prop );
++    }
++    *props_len = prop - properties;
++
++    return err;
++}
++
++static LSTATUS copy_device_property_keys( HKEY hkey, const struct device *dev, const DEVPROPCOMPKEY **comp_keys, ULONG *comp_keys_len )
++{
++    DEVPROPKEY *tmp, *keys = NULL;
++    LSTATUS err;
++
++    for (;;)
++    {
++        if (!(err = enum_device_property_keys( hkey, dev, keys, comp_keys_len ))) break;
++        if (err != ERROR_MORE_DATA) { free( keys ); return err; }
++        if (!(tmp = realloc( keys, *comp_keys_len * sizeof(*keys) ))) { free( keys ); return ERROR_OUTOFMEMORY; }
++        keys = tmp;
++    }
++
++    get_property_compare_keys( keys, *comp_keys_len, comp_keys, comp_keys_len );
++    free( keys );
++    return ERROR_SUCCESS;
++}
++
+ HRESULT WINAPI DevGetObjectPropertiesEx( DEV_OBJECT_TYPE type, const WCHAR *id, ULONG flags, ULONG props_len,
+                                          const DEVPROPCOMPKEY *props, ULONG params_len,
+                                          const DEV_QUERY_PARAMETER *params, ULONG *buf_len, const DEVPROPERTY **buf )
+@@ -1169,6 +1221,31 @@
+         }
+ 
+         *buf = properties;
++        *buf_len = properties_len;
++
++        if (keys != props) free( (void *)keys );
++        RegCloseKey( hkey );
++        break;
++    }
++    case DevObjectTypeDevice:
++    {
++        ULONG properties_len = 0, keys_len = props_len;
++        const DEVPROPCOMPKEY *keys = props;
++        DEVPROPERTY *properties = NULL;
++        struct device dev;
++        HKEY hkey;
++
++        if ((err = init_device( &dev, id ))) break;
++        if ((err = open_device_key( HKEY_LOCAL_MACHINE, &dev, KEY_QUERY_VALUE, TRUE, &hkey ))) break;
++
++        if (all_props) err = copy_device_property_keys( hkey, &dev, &keys, &keys_len );
++        if (!err)
++        {
++            if ((properties_len = keys_len) && !(properties = calloc( keys_len, sizeof(*properties) ))) err = ERROR_OUTOFMEMORY;
++            else err = copy_device_properties( hkey, &dev, keys, keys_len, properties, &properties_len );
++        }
++
++        *buf = properties;
+         *buf_len = properties_len;
+ 
+         if (keys != props) free( (void *)keys );

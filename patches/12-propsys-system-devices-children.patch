@@ -1,0 +1,10 @@
+--- dlls/propsys/propsys_main.c.orig
++++ dlls/propsys/propsys_main.c
+@@ -844,6 +844,7 @@
+     {L"System.Devices.DeviceManufacturer", &PKEY_Devices_DeviceManufacturer, VT_LPWSTR},
+     {L"System.Devices.HardwareIds", &PKEY_Devices_HardwareIds, VT_VECTOR | VT_LPWSTR},
+     {L"System.Devices.Parent", &PKEY_Devices_Parent, VT_LPWSTR},
++    {L"System.Devices.Children", &PKEY_Devices_Children, VT_VECTOR | VT_LPWSTR},
+     {L"System.ItemNameDisplay", &PKEY_ItemNameDisplay, VT_LPWSTR},
+     {L"System.Devices.Category", &PKEY_Devices_Category, VT_VECTOR | VT_LPWSTR},
+     {L"System.Devices.CategoryIds", &PKEY_Devices_CategoryIds, VT_VECTOR | VT_LPWSTR},

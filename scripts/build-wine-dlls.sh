@@ -63,6 +63,13 @@ relink_native winusb                       winusb.dll
 build_driver  hidclass.sys                 hidclass.sys
 build_driver  wineusb.sys                  wineusb.sys
 
+# wineusb.sys also has a Unix half (libusb backend) sharing structs with the PE
+# side; building only one of the two mismatches the ABI.
+make -j"$(nproc)" dlls/wineusb.sys/wineusb.so >/dev/null
+cp dlls/wineusb.sys/wineusb.so "$REPO/prebuilt/wineusb.so"
+strip "$REPO/prebuilt/wineusb.so" 2>/dev/null || true
+echo "    built wineusb.so (unix half)"
+
 echo "$VER" > "$REPO/prebuilt/BUILT_AGAINST"
 echo
 echo "==> Done. Install with:"

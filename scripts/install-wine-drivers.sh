@@ -23,6 +23,16 @@ BUILT="$(cat "$REPO/prebuilt/BUILT_AGAINST" 2>/dev/null || echo unknown)"
   echo "WARNING: wine is $WINEVER but drivers were built against $BUILT." >&2
   echo "         Rebuild with scripts/build-wine-dlls.sh before installing." >&2; }
 
+# wineusb.sys has two halves: the PE driver and a Unix .so that talks to libusb.
+# They share struct definitions, so BOTH must be installed together or the ABI
+# mismatches and transfers fault.
+UNIXDIR="${UNIXDIR:-/usr/lib/wine/x86_64-unix}"
+if [ -f "$REPO/prebuilt/wineusb.so" ] && [ -f "$UNIXDIR/wineusb.so" ]; then
+  [ -f "$UNIXDIR/wineusb.so.stock-backup" ] || { cp -a "$UNIXDIR/wineusb.so" "$UNIXDIR/wineusb.so.stock-backup"; echo "backed up -> $UNIXDIR/wineusb.so.stock-backup"; }
+  install -m755 "$REPO/prebuilt/wineusb.so" "$UNIXDIR/wineusb.so"
+  echo "installed wineusb.so (unix half)"
+fi
+
 for drv in hidclass.sys wineusb.sys; do
   SRC="$REPO/prebuilt/$drv"; DEST="$DESTDIR/$drv"
   [ -f "$SRC" ]  || { echo "missing $SRC" >&2; exit 1; }

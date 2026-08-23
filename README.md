@@ -579,37 +579,46 @@ assembly (`tools/cpuid-shim/thunks.S`):
   six of them out-pointers — and a fixed four-argument thunk drops them, handing the
   callee wild pointers to write through.
 
+Which call is which was found by exploiting the SDK's own convention: an unavailable
+reading is returned as `-1.0f`, so the handful of getters returning exactly that are
+the ones the missing driver would have filled in. Feeding each a distinct value and
+reading the result off CAM's own UI identifies them without any symbol names -- the
+SDK exports exactly one symbol and the hashes are computed at runtime, so there are
+none to recover. `tools/cpuid-shim` can also print a hash-to-vtable-slot map by
+decoding each forwarder's `jmp *disp32(%rax)` at runtime, which is how the rest of
+the surface above was identified.
+
 With the shim, `Temperature` and `Clock` read correctly and CAM offers **CPU
 Temperature** next to Liquid Temperature as a pump/fan curve source and on the LCD.
 
 ## Remaining work
 
-- **GPU monitoring.** Not finished, but mapped. CAM builds its GPU device from the
-  same CPUID SDK (`cpuid-class/src/device/gpu.rs`); without the driver the SDK
-  enumerates no GPU at all — its device list holds only the mainboard (class `0x400`),
-  the CPU (`0x4`) and the network interfaces (`0x200`). Sweeping 24 other class values
-  never made CAM query sensors on a fabricated device, so the GPU does not come from
-  the device list.
+- **GPU monitoring.** Not finished. Mapped far enough to say exactly what blocks it,
+  and to rule out the obvious approaches.
 
-  It comes from a separate cluster of SDK calls that stays dormant while the GPU count
-  is zero. Returning a non-zero count from `61dcc3b9` wakes it, and CAM then reads one
-  record per GPU. The records are a `0x4C8`-byte array at `this->0x18->0x100->0x20`,
-  count at `+0x1c`:
+  It does **not** come from DXGI: a hook on `CreateDXGIFactory1` inside `index.node`
+  never fires, and forcing wined3d to report a card Wine recognises (`VideoPciDeviceID`,
+  which is silently ignored unless the id is in wined3d's table -- the RTX 5090 is not,
+  so it falls back to a GTX 470) still yields `GPUs: none identified`. It does not come
+  from display enumeration either: cam-core *does* see `NVIDIA GeForce RTX 5090` with
+  the right PCI id from `EnumDisplayDevicesW`, and still reports none.
 
-  | hash | vtable | reads | kind |
-  |---|---|---|---|
-  | `61dcc3b9` | `+0x4d8` | count | int |
-  | `46de8dbd` | `+0x4e0` | `entry+0x30` | int |
-  | `e247c48f` | `+0x4f8` | `entry+0x138` | BSTR |
-  | `0fde1fbc` | `+0x510` | `entry+0x338` | BSTR |
-  | `37086e10` | `+0x530` | `entry+0x378` | int |
-  | `ccbf997f` | `+0x558` | `entry+0x420` | int |
+  It comes from `cam_helper`'s system info, which is built entirely from the CPUID SDK.
+  `cam_helper` walks the SDK device list and dispatches on device class:
 
-  Feeding all six (name strings plus PCI-looking ids, and separately vendor enums
-  1..4 across four synthetic GPUs) makes CAM read every record without complaint and
-  still report `No supported graphics cards were found`, so at least one more field or
-  call decides acceptance. The data itself is all available on Linux through
-  `nvidia-smi`/NVML once that is found.
+  | class | device | sensor classes it then reads |
+  |---|---|---|
+  | `0x4` | CPU | `0x2000` temperature, `0x5000` power |
+  | `0x400` | mainboard | `0x3000` fan |
+  | `0x20` | third consumer | `0x3000` fan |
+
+  Without the driver the SDK's device list holds only the mainboard, the CPU and the
+  network interfaces (class `0x200`), so the `0x20` branch never runs. Synthesising a
+  device of that class is not enough on its own: the handler also requires a matching
+  entry in a separate list of `0x118`-byte records, counted by `e9bbd377` (vtable
+  `+0x6f8`) and fetched by `5cf8b9f1` (`+0x7c0`), matching on the record's `+0x3c`
+  field with `+0x38 == 1`. That list is also empty without the driver.
+
 - **Motherboard fans and temperatures.** Second driver (`cam_driver_mb.sys`), reached
   through the same SDK; the sensor getter (`ac2b5856`) is decoded but the fan class
   (`0x3000`) is served off the mainboard device, which is DMI-only here.

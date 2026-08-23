@@ -61,13 +61,22 @@ The prefix defaults to `~/pfx/nzxt_cam`; override with `WINEPREFIX=... ./scripts
 
 ### Display scaling
 
-CAM is an Electron app and renders at 100% no matter what the desktop is set to, so on
-a scaled display it comes out small. The launcher reads your desktop scale (KDE via
-`kscreen-doctor`, else `GDK_SCALE`, else `Xft.dpi`) and passes it through, and
-`setup.sh` sets Wine's DPI to match so window chrome scales too. Override either way:
+CAM renders at 100% no matter what the desktop is set to, so on a scaled display it
+comes out small. `setup.sh` reads your desktop scale (KDE via `kscreen-doctor`, else
+`GDK_SCALE`) and sets Wine's DPI to match; Chromium picks that up as its device pixel
+ratio. Change it at any time with:
 
 ```bash
 NZXT_CAM_SCALE=1.5 nzxt-cam
+```
+
+**Do not scale it with `--force-device-scale-factor`.** It sizes the window correctly,
+but it also stops cam-core from starting, so no NZXT device is ever detected — the UI
+looks completely normal while Cooling and Lighting stay empty and `cam.log` is empty:
+
+```
+--force-device-scale-factor=1.25   cam.log = 0 bytes,  device not detected
+Wine DPI (LogPixels) = 120         cam.log = 4600,     device detected, DPR 1.25
 ```
 
 ---

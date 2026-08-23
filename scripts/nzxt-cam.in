@@ -13,23 +13,21 @@ if [ -f "$FIXUP" ]; then
   wine "$FIXUP" >/dev/null 2>&1
 fi
 
-# CAM is an Electron app and renders at 100% regardless of the desktop's scale, so on
-# a scaled display it comes out small. Override with e.g. NZXT_CAM_SCALE=1.5.
-scale="${NZXT_CAM_SCALE:-}"
-if [ -z "$scale" ] && command -v kscreen-doctor >/dev/null 2>&1; then
-  scale=$(kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' \
-          | awk '/Scale:/ {print $2; exit}')
+# Scaling goes through Wine's DPI, which Chromium reports as its device pixel ratio;
+# setup.sh sets it from the desktop scale. NZXT_CAM_SCALE re-points it here.
+#
+# Do NOT scale with --force-device-scale-factor instead. It sizes the window
+# correctly but stops cam-core from starting, so no NZXT device is ever detected --
+# the UI looks perfectly fine while the Cooling and Lighting pages stay empty.
+if [ -n "${NZXT_CAM_SCALE:-}" ]; then
+  dpi=$(awk -v s="$NZXT_CAM_SCALE" 'BEGIN{printf "%d", (s*96)+0.5}')
+  cur=$(wine reg query 'HKCU\Control Panel\Desktop' /v LogPixels 2>/dev/null \
+        | awk '/LogPixels/{print strtonum($NF)}')
+  if [ "$dpi" != "$cur" ]; then
+    wine reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$dpi" /f >/dev/null 2>&1
+    wineserver -w
+  fi
 fi
-if [ -z "$scale" ] && [ -n "$GDK_SCALE" ]; then scale="$GDK_SCALE"; fi
-if [ -z "$scale" ] && command -v xrdb >/dev/null 2>&1; then
-  dpi=$(xrdb -query 2>/dev/null | awk -F: '/Xft.dpi/ {gsub(/ /,"",$2); print $2}')
-  [ -n "$dpi" ] && scale=$(awk -v d="$dpi" 'BEGIN{printf "%.2f", d/96}')
-fi
-case "$scale" in ""|0|1|1.0|1.00) scale=1 ;; esac
 
 cd "$WINEPREFIX/drive_c/Program Files/NZXT CAM" || exit 1
-if [ "$scale" = "1" ]; then
-  exec wine "NZXT CAM.exe" "$@"
-else
-  exec wine "NZXT CAM.exe" --force-device-scale-factor="$scale" "$@"
-fi
+exec wine "NZXT CAM.exe" "$@"

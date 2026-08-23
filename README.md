@@ -382,6 +382,39 @@ propSize=108   cmpSize=110      (same 54 characters)
 so the comparison was skipped entirely and the filter evaluated false. `patches/17-…`
 compares string contents, ignoring a trailing terminator on either side.
 
+### 18. MS OS descriptors were never read, so WinUSB device interfaces went unregistered
+
+A WinUSB device does not have to be opened through `GUID_DEVINTERFACE_USB_DEVICE`.
+It publishes its own device interface GUID in a **Microsoft OS 1.0 descriptor**, and
+applications open it by that GUID. Wine had no MS OS descriptor support at all.
+
+Read straight off the Kraken over `usbdevfs`:
+
+```
+string desc 0xEE: 12 03 4d 00 53 00 46 00 54 00 31 00 30 00 30 00 a7 00
+  signature='MSFT100'  vendor_code=0xa7
+
+Extended Properties (wIndex=0x0005): total=224 count=1
+  prop type=7 (REG_MULTI_SZ) name='DeviceInterfaceGUIDS'
+       data='{30123011-7EE7-1125-0724-101503010819}'
+```
+
+and that is character-for-character the GUID CAM's LCD code queries for:
+
+```
+System.Devices.InterfaceClassGuid:="{30123011-7EE7-1125-0724-101503010819}"
+```
+
+`patches/18-…` makes `wineusb.sys` fetch string descriptor `0xEE`, verify the
+`MSFT100` signature, take the vendor request code from its last byte, request the
+Extended Properties feature descriptor, parse `DeviceInterfaceGUIDs` out of it, and
+register that interface with `IoRegisterDeviceInterface`.
+
+It registers only where WinUSB would be the function driver on Windows: on the
+interfaces of a composite device rather than its parent (that one belongs to
+usbccgp), and never on a HID interface, which winebus and hidclass drive. Registering
+it everywhere makes CAM find three devices where it expects one.
+
 ## The USB device tree
 
 CAM correlates a HID interface with its WinUSB sibling by walking up to the USB hub
@@ -421,20 +454,25 @@ wine ~/.../system32/usbtree-fixup.exe -v
 
 ## Remaining work
 
-- **LCD:** still `Could not find WinUSB endpoint`, now failing as
-  `Unexpected number of WinUSB devices: 0`. CAM issues two queries for a USB device
-  interface; the one naming the composite works and returns 1 object, but the one
-  naming the HID interface's own devnode returns 0:
+- **LCD: needs the WinRT `Windows.Devices.Usb` API implemented.** After fix 18 the
+  device interface lookup succeeds and CAM retrieves the device's ID, then activates
+  `Windows.Devices.Usb.UsbDevice` and calls `UsbDevice.FromIdAsync` — the LCD is
+  driven through WinRT, not through raw WinUSB. Every method in Wine's
+  `dlls/windows.devices.usb` is a stub returning `E_NOTIMPL`:
 
-  ```
-  InstanceId:"USB\VID_1E71&PID_3012&MI_01\258&1F64…"  ->  0 objects
-  InstanceId:"USB\VID_1E71&PID_3012\512&258&3&4"      ->  1 object
+  ```c
+  static HRESULT WINAPI usb_device_statics_FromIdAsync( IUsbDeviceStatics *iface, ... )
+  {
+      FIXME( ... );
+      return E_NOTIMPL;
+  }
   ```
 
-  This is the two-bus split again, one level deeper: the devnode CAM knows about is
-  `winebus`'s, and the WinUSB interface belongs to `wineusb`'s separate devnode for
-  the same physical interface. Fixing it means either making the two buses share a
-  devnode, or mapping the interface across in `usbtree-fixup`.
+  This is a much larger job than the gaps above: `UsbDevice`, `UsbConfiguration`,
+  `UsbInterface`, the bulk pipe classes and their `IInputStream`/`IOutputStream`
+  plumbing all have to exist before a single frame reaches the screen. The WinUSB
+  layer underneath it (patches 8, 10) is already working, so it is a matter of
+  building the WinRT surface on top rather than any further kernel work.
 - **Firmware update:** untested.
 - Unrelated bug spotted while reading `dlls/wintypes/map.c`: `map_entry_clear` calls
   `IInspectable_AddRef` on the value it is about to drop, where it should `Release`.

@@ -1,0 +1,240 @@
+--- dlls/wineusb.sys/unixlib.h.orig
++++ dlls/wineusb.sys/unixlib.h
+@@ -46,6 +46,9 @@
+             UINT8 class, subclass, protocol, busnum, portnum;
+             bool interface;
+             INT16 interface_index;
++            /* Device interface GUID advertised through MS OS descriptors, if any. */
++            bool has_iface_guid;
++            GUID iface_guid;
+         } added_device;
+         struct unix_device *removed_device;
+         IRP *completed_irp;
+@@ -61,6 +64,7 @@
+ {
+     struct unix_device *device;
+     IRP *irp;
++    void *urb;
+     void *transfer_buffer;
+ };
+ 
+--- dlls/wineusb.sys/unixlib.c.orig
++++ dlls/wineusb.sys/unixlib.c
+@@ -105,6 +105,94 @@
+     return true;
+ }
+ 
++
++/* Microsoft OS 1.0 descriptors. A device advertises support by returning the
++ * signature "MSFT100" from string descriptor 0xee, whose last byte is the vendor
++ * request code used to fetch the feature descriptors. Index 0x0005 is the Extended
++ * Properties descriptor, which is where WinUSB devices publish the device interface
++ * GUID applications open them by. Wine did not read these at all, so such devices
++ * were only reachable through GUID_DEVINTERFACE_USB_DEVICE. */
++#define MS_OS_STRING_DESC_INDEX      0xee
++#define MS_OS_FEATURE_EXT_PROPERTIES 0x0005
++#define MS_OS_PROP_TYPE_SZ           1
++#define MS_OS_PROP_TYPE_MULTI_SZ     7
++
++static bool parse_guid_string(const unsigned char *utf16, ULONG bytes, GUID *guid)
++{
++    char buf[64];
++    ULONG i, len = bytes / 2;
++    unsigned int d[11];
++
++    if (len >= ARRAY_SIZE(buf)) len = ARRAY_SIZE(buf) - 1;
++    for (i = 0; i < len; i++) buf[i] = utf16[i * 2];
++    buf[len] = 0;
++
++    if (sscanf(buf, "{%8x-%4x-%4x-%2x%2x-%2x%2x%2x%2x%2x%2x}", &d[0], &d[1], &d[2],
++               &d[3], &d[4], &d[5], &d[6], &d[7], &d[8], &d[9], &d[10]) != 11)
++        return false;
++
++    guid->Data1 = d[0];
++    guid->Data2 = d[1];
++    guid->Data3 = d[2];
++    for (i = 0; i < 8; i++) guid->Data4[i] = d[3 + i];
++    return true;
++}
++
++static bool get_ms_os_interface_guid(libusb_device_handle *handle, uint8_t interface_num, GUID *guid)
++{
++    unsigned char buf[4096], header[16];
++    ULONG total, count, offset, i;
++    unsigned char vendor_code;
++    int ret;
++
++    ret = libusb_get_string_descriptor(handle, MS_OS_STRING_DESC_INDEX, 0, buf, sizeof(buf));
++    if (ret < 18 || buf[1] != LIBUSB_DT_STRING) return false;
++    /* "MSFT100" in UTF-16LE occupies bytes 2..15, the vendor code follows. */
++    for (i = 0; i < 7; i++)
++        if (buf[2 + i * 2] != "MSFT100"[i]) return false;
++    vendor_code = buf[16];
++
++    ret = libusb_control_transfer(handle,
++            LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_INTERFACE,
++            vendor_code, interface_num, MS_OS_FEATURE_EXT_PROPERTIES, header, sizeof(header), 1000);
++    if (ret < 10) return false;
++
++    total = header[0] | (header[1] << 8) | (header[2] << 16) | ((ULONG)header[3] << 24);
++    if (total < 10 || total > sizeof(buf)) return false;
++
++    ret = libusb_control_transfer(handle,
++            LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_INTERFACE,
++            vendor_code, interface_num, MS_OS_FEATURE_EXT_PROPERTIES, buf, total, 1000);
++    if (ret < (int)total) return false;
++
++    count = buf[8] | (buf[9] << 8);
++    offset = 10;
++    for (i = 0; i < count && offset + 14 <= total; i++)
++    {
++        ULONG size, type, name_len, data_len, name_off, data_off;
++
++        size = buf[offset] | (buf[offset + 1] << 8) | (buf[offset + 2] << 16) | ((ULONG)buf[offset + 3] << 24);
++        type = buf[offset + 4] | (buf[offset + 5] << 8) | (buf[offset + 6] << 16) | ((ULONG)buf[offset + 7] << 24);
++        name_len = buf[offset + 8] | (buf[offset + 9] << 8);
++        name_off = offset + 10;
++        if (!size || offset + size > total || name_off + name_len + 4 > total) break;
++
++        data_len = buf[name_off + name_len] | (buf[name_off + name_len + 1] << 8)
++                 | (buf[name_off + name_len + 2] << 16) | ((ULONG)buf[name_off + name_len + 3] << 24);
++        data_off = name_off + name_len + 4;
++
++        if ((type == MS_OS_PROP_TYPE_SZ || type == MS_OS_PROP_TYPE_MULTI_SZ)
++            && data_off + data_len <= total && parse_guid_string(buf + data_off, data_len, guid))
++        {
++            TRACE("Device interface GUID from MS OS descriptors: %s\n", debugstr_guid(guid));
++            return true;
++        }
++        offset += size;
++    }
++
++    return false;
++}
++
+ static void add_usb_device(libusb_device *libusb_device)
+ {
+     struct libusb_config_descriptor *config_desc;
+@@ -146,6 +234,8 @@
+     usb_event.u.added_device.portnum = libusb_get_port_number(libusb_device);
+     usb_event.u.added_device.interface = false;
+     usb_event.u.added_device.interface_index = -1;
++    usb_event.u.added_device.has_iface_guid =
++            get_ms_os_interface_guid(unix_device->handle, 0, &usb_event.u.added_device.iface_guid);
+ 
+     if (!(ret = libusb_get_active_config_descriptor(libusb_device, &config_desc)))
+     {
+@@ -208,6 +298,8 @@
+                 usb_event.u.added_device.protocol = iface_desc->bInterfaceProtocol;
+                 usb_event.u.added_device.interface = true;
+                 usb_event.u.added_device.interface_index = iface_desc->bInterfaceNumber;
++                usb_event.u.added_device.has_iface_guid = get_ms_os_interface_guid(unix_device->handle,
++                        iface_desc->bInterfaceNumber, &usb_event.u.added_device.iface_guid);
+                 queue_event(&usb_event);
+             }
+         }
+@@ -329,6 +421,7 @@
+ struct transfer_ctx
+ {
+     IRP *irp;
++    URB *urb;
+     void *transfer_buffer;
+ };
+ 
+@@ -336,7 +429,7 @@
+ {
+     struct transfer_ctx *transfer_ctx = transfer->user_data;
+     IRP *irp = transfer_ctx->irp;
+-    URB *urb = IoGetCurrentIrpStackLocation(irp)->Parameters.Others.Argument1;
++    URB *urb = transfer_ctx->urb;
+     unsigned char *transfer_buffer = transfer_ctx->transfer_buffer;
+     struct usb_event event;
+ 
+@@ -418,7 +511,7 @@
+     const struct usb_submit_urb_params *params = args;
+     IRP *irp = params->irp;
+ 
+-    URB *urb = IoGetCurrentIrpStackLocation(irp)->Parameters.Others.Argument1;
++    URB *urb = params->urb;
+     libusb_device_handle *handle = params->device->handle;
+     struct libusb_transfer *transfer;
+     int ret;
+@@ -447,6 +540,7 @@
+             if (!(transfer_ctx = calloc(1, sizeof(*transfer_ctx))))
+                 return STATUS_NO_MEMORY;
+             transfer_ctx->irp = irp;
++            transfer_ctx->urb = urb;
+             transfer_ctx->transfer_buffer = params->transfer_buffer;
+ 
+             if (!(transfer = libusb_alloc_transfer(0)))
+@@ -491,6 +585,7 @@
+             if (!(transfer_ctx = calloc(1, sizeof(*transfer_ctx))))
+                 return STATUS_NO_MEMORY;
+             transfer_ctx->irp = irp;
++            transfer_ctx->urb = urb;
+             transfer_ctx->transfer_buffer = params->transfer_buffer;
+ 
+             if (!(transfer = libusb_alloc_transfer(0)))
+@@ -552,6 +647,7 @@
+             if (!(transfer_ctx = calloc(1, sizeof(*transfer_ctx))))
+                 return STATUS_NO_MEMORY;
+             transfer_ctx->irp = irp;
++            transfer_ctx->urb = urb;
+             transfer_ctx->transfer_buffer = params->transfer_buffer;
+ 
+             if (urb->UrbHeader.Function == URB_FUNCTION_VENDOR_DEVICE)
+--- dlls/wineusb.sys/wineusb.c.orig
++++ dlls/wineusb.sys/wineusb.c
+@@ -95,6 +95,10 @@
+     struct unix_device *unix_device;
+ 
+     UNICODE_STRING link_name;
++    /* Device interface GUID advertised through MS OS descriptors, if any. */
++    bool has_iface_guid;
++    GUID iface_guid;
++    UNICODE_STRING iface_link_name;
+ 
+     LIST_ENTRY irp_list;
+ };
+@@ -140,6 +144,8 @@
+     device->removed = FALSE;
+ 
+     device->interface = event->interface;
++    device->has_iface_guid = event->has_iface_guid;
++    device->iface_guid = event->iface_guid;
+     device->interface_index = event->interface_index;
+ 
+     device->class = event->class;
+@@ -550,6 +556,24 @@
+                 else
+                     ERR("Failed to register interface, status %#lx.\n", status);
+             }
++
++            /* Devices that publish a device interface GUID through MS OS descriptors are
++             * opened by that GUID rather than by GUID_DEVINTERFACE_USB_DEVICE. Register it
++             * only where WinUSB would be the function driver on Windows: on the interfaces
++             * of a composite device rather than its parent (that one belongs to usbccgp),
++             * and never on a HID interface, which winebus and hidclass drive instead. */
++            if (device->has_iface_guid && !device->iface_link_name.Buffer
++                && (device->interface || device->interface_index != -1)
++                && device->class != 0x03)
++            {
++                NTSTATUS status;
++
++                if (!(status = IoRegisterDeviceInterface(device_obj, &device->iface_guid,
++                                                         NULL, &device->iface_link_name)))
++                    IoSetDeviceInterfaceState(&device->iface_link_name, TRUE);
++                else
++                    ERR("Failed to register %s, status %#lx.\n", debugstr_guid(&device->iface_guid), status);
++            }
+             ret = STATUS_SUCCESS;
+             break;
+ 
+@@ -561,6 +585,7 @@
+                 device->removed = TRUE;
+                 list_remove(&device->entry);
+                 if (device->link_name.Buffer) IoSetDeviceInterfaceState(&device->link_name, FALSE);
++                if (device->iface_link_name.Buffer) IoSetDeviceInterfaceState(&device->iface_link_name, FALSE);
+             }
+             LeaveCriticalSection(&wineusb_cs);
+             ret = STATUS_SUCCESS;

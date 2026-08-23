@@ -584,12 +584,32 @@ Temperature** next to Liquid Temperature as a pump/fan curve source and on the L
 
 ## Remaining work
 
-- **GPU monitoring.** CAM builds its GPU device from the same CPUID SDK
-  (`cpuid-class/src/device/gpu.rs`), and without the driver the SDK enumerates no GPU:
-  its device list holds only the mainboard, the CPU and the network interfaces. A
-  dormant GPU call cluster does exist in the SDK (vtable `+0x4e0`…`+0x558`) and can be
-  woken, but it has to be fed a fabricated GPU device; the data itself is all there on
-  Linux via `nvidia-smi`/NVML. Not finished.
+- **GPU monitoring.** Not finished, but mapped. CAM builds its GPU device from the
+  same CPUID SDK (`cpuid-class/src/device/gpu.rs`); without the driver the SDK
+  enumerates no GPU at all — its device list holds only the mainboard (class `0x400`),
+  the CPU (`0x4`) and the network interfaces (`0x200`). Sweeping 24 other class values
+  never made CAM query sensors on a fabricated device, so the GPU does not come from
+  the device list.
+
+  It comes from a separate cluster of SDK calls that stays dormant while the GPU count
+  is zero. Returning a non-zero count from `61dcc3b9` wakes it, and CAM then reads one
+  record per GPU. The records are a `0x4C8`-byte array at `this->0x18->0x100->0x20`,
+  count at `+0x1c`:
+
+  | hash | vtable | reads | kind |
+  |---|---|---|---|
+  | `61dcc3b9` | `+0x4d8` | count | int |
+  | `46de8dbd` | `+0x4e0` | `entry+0x30` | int |
+  | `e247c48f` | `+0x4f8` | `entry+0x138` | BSTR |
+  | `0fde1fbc` | `+0x510` | `entry+0x338` | BSTR |
+  | `37086e10` | `+0x530` | `entry+0x378` | int |
+  | `ccbf997f` | `+0x558` | `entry+0x420` | int |
+
+  Feeding all six (name strings plus PCI-looking ids, and separately vendor enums
+  1..4 across four synthetic GPUs) makes CAM read every record without complaint and
+  still report `No supported graphics cards were found`, so at least one more field or
+  call decides acceptance. The data itself is all available on Linux through
+  `nvidia-smi`/NVML once that is found.
 - **Motherboard fans and temperatures.** Second driver (`cam_driver_mb.sys`), reached
   through the same SDK; the sensor getter (`ac2b5856`) is decoded but the fan class
   (`0x3000`) is served off the mainboard device, which is DMI-only here.

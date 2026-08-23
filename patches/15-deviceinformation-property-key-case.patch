@@ -1,0 +1,13 @@
+--- dlls/windows.devices.enumeration/information.c.orig
++++ dlls/windows.devices.enumeration/information.c
+@@ -407,7 +407,9 @@
+             WCHAR buf[80];
+ 
+             WARN( "Unknown property key: %s\n", debugstr_DEVPROPKEY( propkey ) );
+-            swprintf( buf, ARRAY_SIZE( buf ), L"{%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x} %lu", fmtid->Data1, fmtid->Data2, fmtid->Data3,
++            /* Property keys without a canonical name are stringified the same way
++             * PSStringFromPropertyKey does, i.e. with an upper-case GUID. */
++            swprintf( buf, ARRAY_SIZE( buf ), L"{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X} %lu", fmtid->Data1, fmtid->Data2, fmtid->Data3,
+                       fmtid->Data4[0], fmtid->Data4[1], fmtid->Data4[2], fmtid->Data4[3], fmtid->Data4[4], fmtid->Data4[5], fmtid->Data4[6], fmtid->Data4[7], propkey->pid );
+             hr = WindowsCreateString( buf, wcslen( buf ), &canonical_name );
+         }

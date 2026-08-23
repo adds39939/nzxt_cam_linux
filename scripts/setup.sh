@@ -68,6 +68,21 @@ fi
 CAMDIR="$WINEPREFIX/drive_c/Program Files/NZXT CAM"
 [ -d "$CAMDIR" ] || die "CAM is not installed. Re-run with the installer path."
 
+# CAM reads CPU/GPU telemetry through CPUID's cpuidsdk64.dll, which needs a ring-0
+# driver that cannot work under Wine. Keep the genuine SDK next to the shim, which
+# forwards to it and fills in the readings from Linux. See tools/cpuid-shim.
+say "Installing the CPUID SDK shim (CPU temperature and clocks)"
+CPUID="$CAMDIR/resources/app.asar.unpacked/node_modules/@nzxt/cam-core/dist/common/cpuid"
+if [ -d "$CPUID" ]; then
+  # Only move the original aside once, so re-running never shims the shim.
+  if [ ! -f "$CPUID/cpuidsdk64_real.dll" ]; then
+    cp "$CPUID/cpuidsdk64.dll" "$CPUID/cpuidsdk64_real.dll"
+  fi
+  cp "$REPO/prebuilt/cpuidsdk64_shim.dll" "$CPUID/cpuidsdk64.dll"
+else
+  echo "    WARNING: cpuid directory not found; CPU temperature will read n/a" >&2
+fi
+
 say "Setting guest mode (skips the sign-in screen)"
 DS="$WINEPREFIX/drive_c/users/$USER/AppData/Roaming/NZXT CAM/DataStorage/latest/local"
 mkdir -p "$DS"

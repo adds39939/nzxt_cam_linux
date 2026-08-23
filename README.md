@@ -85,10 +85,11 @@ Wine DPI (LogPixels) = 120         cam.log = 4600,     device detected, DPR 1.25
 
 | Works | Doesn't |
 |---|---|
-| UI, navigation, all pages | CPU / motherboard **temperatures** |
-| CPU load %, clock | Motherboard **fan** speeds and control |
-| RAM usage | **GPU** monitoring (`No supported graphics cards`) |
-| Network throughput | Firmware update (untested) |
+| UI, navigation, all pages | Motherboard **fan** speeds and control |
+| **CPU temperature** (via the CPUID shim) | Motherboard **temperatures** |
+| **CPU clock**, load %, model, codename, socket | **GPU** monitoring (`No supported graphics cards`) |
+| RAM usage | Firmware update (untested) |
+| Network throughput | |
 | Per-process CPU/RAM/net table | |
 | Lighting / Cooling / Audio pages render | |
 | **Kraken Elite V2 detection** (`1e71:3012`) | |
@@ -96,17 +97,23 @@ Wine DPI (LogPixels) = 120         cam.log = 4600,     device detected, DPR 1.25
 | **Kraken LCD** — live frames to the display | |
 | **Kraken liquid temp / pump / fan RPM** | |
 
-**Motherboard sensors will never work under Wine.** CAM reads CPU and board
-temperatures through a kernel driver (`cpuz162`, `cam_driver_mb.sys`). Wine has no
-kernel driver support, so you'll see:
+**CPU telemetry goes through a kernel driver**, and that part is not fixable
+directly: CAM reads it through CPUID's `cpuidsdk64.dll`, which talks to `cpuz162`.
+Wine has no kernel driver support, so you'll see:
 
 ```
 err:ntoskrnl:ZwLoadDriver failed to create driver L"...\cpuz162": c0000142
 ```
 
-The CPU tile's Temperature and Fan stay `n/a`. This is not fixable in userspace. It
-does **not** affect the cooler: the Kraken reports its own liquid temperature and pump
-and fan RPM over USB, and those work (see the Cooling screenshot above).
+The SDK then fails to initialise with `0x45A` and CAM reports **no CPU at all**.
+The shim in `tools/cpuid-shim` works around it (fix #20): it forwards to the genuine
+SDK for everything that works from userspace and reads the rest from Linux, so CPU
+temperature and clock are correct and CPU temperature is selectable as a fan/pump
+source and on the LCD.
+
+Motherboard fan speeds still read `n/a` — those come from a second driver
+(`cam_driver_mb.sys`) and a Super-I/O chip the SDK reaches through it. GPU monitoring
+is also still missing; see *Remaining work*.
 
 **NZXT device control** needs fixes #3–#15. The discovery path is not the obvious
 one: CAM's device-framework v2 runs a WinRT **`DeviceWatcher`** over the *HID*
@@ -125,8 +132,7 @@ CoolingManager: Received new cooling configuration ... CurvePoint(20°C => 60.00
 
 Discovery survives a cold start: the launcher runs `usbtree-fixup.exe` (see
 *The USB device tree* below) after Wine's PnP manager has enumerated and before CAM
-starts. **Not yet finished:** the LCD still reports `Could not find WinUSB endpoint`
-— see *Remaining work*.
+starts.
 
 ---
 
@@ -274,9 +280,7 @@ replaced DLLs in the prefix's `system32`.
 
 - CAM auto-updates. Updates replace `app.asar` but **not** the Wine DLLs, fonts, or
   guest-mode setting, so they survive. Set `skipUpdateOnStart` in `settings.json` to pin.
-- No patch to `app.asar` is needed. CAM logs one harmless rejection
-  (`[Core bug] CPU device should have CPU temperature channels`) because temps are
-  unavailable; it no longer breaks the UI once fonts work.
+- No patch to `app.asar` is needed.
 - `privateMode` is on by default — CAM won't phone home with telemetry.
 
 ## Licensing
@@ -545,15 +549,56 @@ the fixup has to run **after** enumeration and **before** CAM — which is what 
 wine ~/.../system32/usbtree-fixup.exe -v
 ```
 
+### 20. CPU telemetry needs a ring-0 driver — shimmed instead
+
+Not a Wine bug, and the only fix here that is not a Wine patch. CAM reads CPU
+telemetry through CPUID's `cpuidsdk64.dll`, which drives a ring-0 helper (`cpuz162`)
+to reach MSRs and the SMU. Wine cannot load it, so the SDK's init returns `0x45A`,
+`cam_helper` retries five times and gives up, and CAM registers **no CPU device**.
+
+`tools/cpuid-shim` is installed as `cpuidsdk64.dll` with the genuine SDK kept beside
+it as `cpuidsdk64_real.dll`. It forwards every call to the real SDK — which still
+supplies topology, model numbers, codename and socket from CPUID alone — reports init
+as successful, and replaces the readings that need the driver:
+
+| SDK call | Meaning | Source |
+|---|---|---|
+| `a3fd47fa` | initialise | forced to succeed, error out-params cleared |
+| `602cc059` | CPU package temperature | `k10temp` / `coretemp` hwmon |
+| `039a0734` | per-core clock multiplier | `cpufreq/scaling_cur_freq` |
+
+The SDK exports exactly one symbol, `QueryInterface(uint32 name_hash)`, returning a
+function pointer per hashed name; each is a thin forwarder to a C++ virtual method on
+the instance. Two details make a C thunk unusable, so the call path is written in
+assembly (`tools/cpuid-shim/thunks.S`):
+
+* readings come back in **XMM0**, which a C thunk cannot forward and the logging path
+  would clobber — this is why the clock first appeared as a plausible-looking but
+  wrong `20475MHz`;
+* several entry points take **arguments on the stack** — the sensor getter takes ten,
+  six of them out-pointers — and a fixed four-argument thunk drops them, handing the
+  callee wild pointers to write through.
+
+With the shim, `Temperature` and `Clock` read correctly and CAM offers **CPU
+Temperature** next to Liquid Temperature as a pump/fan curve source and on the LCD.
+
 ## Remaining work
 
+- **GPU monitoring.** CAM builds its GPU device from the same CPUID SDK
+  (`cpuid-class/src/device/gpu.rs`), and without the driver the SDK enumerates no GPU:
+  its device list holds only the mainboard, the CPU and the network interfaces. A
+  dormant GPU call cluster does exist in the SDK (vtable `+0x4e0`…`+0x558`) and can be
+  woken, but it has to be fed a fabricated GPU device; the data itself is all there on
+  Linux via `nvidia-smi`/NVML. Not finished.
+- **Motherboard fans and temperatures.** Second driver (`cam_driver_mb.sys`), reached
+  through the same SDK; the sensor getter (`ac2b5856`) is decoded but the fan class
+  (`0x3000`) is served off the mainboard device, which is DMI-only here.
 - **Firmware update:** untested. CAM ships `firmware-update.exe` and
   `rvclib-fw-updater.exe` as separate binaries, so this may exercise paths none of
   the work above touches.
 - The WinRT USB implementation covers what the LCD needs. `SendControlOutTransferAsync`,
   the endpoint-descriptor properties, interrupt pipes and `UsbConfiguration`'s
   descriptor accessors are still stubs; nothing in CAM's LCD path calls them.
-- **Firmware update:** untested.
 - Unrelated bug spotted while reading `dlls/wintypes/map.c`: `map_entry_clear` calls
   `IInspectable_AddRef` on the value it is about to drop, where it should `Release`.
   Left alone here because changing refcounting was not needed for this work.

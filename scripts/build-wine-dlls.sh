@@ -73,6 +73,11 @@ cp dlls/wineusb.sys/wineusb.so "$REPO/prebuilt/wineusb.so"
 strip "$REPO/prebuilt/wineusb.so" 2>/dev/null || true
 echo "    built wineusb.so (unix half)"
 
+echo "==> Building the CPUID SDK shim"
+x86_64-w64-mingw32-gcc -O1 -shared -o "$REPO/prebuilt/cpuidsdk64_shim.dll" \
+  "$REPO/tools/cpuid-shim/shim.c" "$REPO/tools/cpuid-shim/thunks.S" -loleaut32
+echo "    built cpuidsdk64_shim.dll"
+
 echo "$VER" > "$REPO/prebuilt/BUILT_AGAINST"
 echo
 echo "==> Done. Install with:"

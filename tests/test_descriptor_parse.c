@@ -94,7 +94,7 @@ int main(void)
     struct winusb_handle dev = {0};
     WINUSB_PIPE_INFORMATION pipe;
     const USB_INTERFACE_DESCRIPTOR *iface;
-    FILE *f = fopen("kraken_config.bin", "rb");
+    FILE *f = fopen("kraken_elite_v2_config.bin", "rb");
     static UCHAR buf[4096]; size_t n;
 
     if (!f) { printf("cannot open kraken_config.bin\n"); return 1; }

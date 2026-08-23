@@ -1,0 +1,40 @@
+--- dlls/winusb/main.c.orig
++++ dlls/winusb/main.c
+@@ -47,6 +47,7 @@
+ {
+     ULONG size = sizeof(*req) + *len, returned = 0;
+     struct wineusb_urb_request *msg;
++    OVERLAPPED ov = {0};
+     BOOL ret;
+ 
+     if (!(msg = malloc( size )))
+@@ -59,7 +60,13 @@
+     if (*len && buffer && !(req->flags & WINEUSB_TRANSFER_IN))
+         memcpy( msg + 1, buffer, *len );
+ 
+-    ret = DeviceIoControl( device->file, IOCTL_WINEUSB_SUBMIT_URB, msg, size, msg, size, &returned, NULL );
++    /* The device handle is typically opened FILE_FLAG_OVERLAPPED, so a synchronous
++     * call returns ERROR_IO_PENDING; wait for the transfer rather than failing. */
++    ov.hEvent = CreateEventW( NULL, TRUE, FALSE, NULL );
++    ret = DeviceIoControl( device->file, IOCTL_WINEUSB_SUBMIT_URB, msg, size, msg, size, &returned, &ov );
++    if (!ret && GetLastError() == ERROR_IO_PENDING)
++        ret = GetOverlappedResult( device->file, &ov, &returned, TRUE );
++    if (ov.hEvent) CloseHandle( ov.hEvent );
+     if (ret)
+     {
+         *len = msg->transfer_length;
+@@ -429,6 +436,14 @@
+         return FALSE;
+     }
+     ret = get_descriptor( device, type, index, lang, buffer, &len );
++    if (ret && len)
++    {
++        char hex[64] = {0};
++        ULONG i, n = min( len, 18 );
++        for (i = 0; i < n; i++) sprintf( hex + i * 3, "%02x ", ((BYTE *)buffer)[i] );
++        TRACE( "returned %lu bytes: %s\n", len, hex );
++    }
++    else if (!ret) WARN( "descriptor type %#x failed, error %lu.\n", type, GetLastError() );
+     if (transferred) *transferred = len;
+     return ret;
+ }

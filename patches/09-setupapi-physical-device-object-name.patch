@@ -1,0 +1,55 @@
+--- dlls/setupapi/devinst.c.orig
++++ dlls/setupapi/devinst.c
+@@ -3273,6 +3273,44 @@
+         return TRUE;
+     }
+ 
++    if (Property == SPDRP_PHYSICAL_DEVICE_OBJECT_NAME)
++    {
++        DWORD size_needed, hash = 2166136261u;
++        WCHAR name[32];
++        const WCHAR *p;
++
++        /* Wine's PDOs are unnamed. Applications use this to identify a device
++         * uniquely, and some expect the short \Device\XXXXXXXX form Windows uses,
++         * so derive a stable 32-bit value from the instance id (FNV-1a). */
++        if (!device->instanceId || !*device->instanceId)
++        {
++            SetLastError(ERROR_INVALID_DATA);
++            return FALSE;
++        }
++
++        for (p = device->instanceId; *p; p++)
++        {
++            hash ^= (DWORD)*p;
++            hash *= 16777619u;
++        }
++        swprintf(name, ARRAY_SIZE(name), L"\\Device\\%08X", hash);
++        size_needed = (lstrlenW(name) + 1) * sizeof(WCHAR);
++
++        if (RequiredSize)
++            *RequiredSize = size_needed;
++        if (PropertyRegDataType)
++            *PropertyRegDataType = REG_SZ;
++
++        if (!PropertyBuffer || PropertyBufferSize < size_needed)
++        {
++            SetLastError(ERROR_INSUFFICIENT_BUFFER);
++            return FALSE;
++        }
++
++        lstrcpyW((WCHAR *)PropertyBuffer, name);
++        return TRUE;
++    }
++
+     if (Property < ARRAY_SIZE(PropertyMap) && PropertyMap[Property].nameW)
+     {
+         DWORD size = PropertyBufferSize;
+@@ -4547,6 +4585,7 @@
+     ls = get_device_property(device, devinfo, device_data, prop_key, prop_type, prop_buff, prop_buff_size,
+                              required_size, flags);
+ 
++
+     SetLastError(ls);
+     return !ls;
+ }

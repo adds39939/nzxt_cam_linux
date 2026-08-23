@@ -1,0 +1,43 @@
+--- dlls/windows.devices.enumeration/main.c.orig
++++ dlls/windows.devices.enumeration/main.c
+@@ -1008,9 +1008,38 @@
+                                                     IIterable_HSTRING *additional_properties, DeviceInformationKind kind,
+                                                     IAsyncOperation_DeviceInformationCollection **async_operation )
+ {
+-    FIXME( "iface %p, filter %s, additional_properties %p, kind %u, async_operation %p stub!\n",
++    const DEVPROPCOMPKEY device_iface_default_props[] = {
++        { DEVPKEY_DeviceInterface_Enabled, DEVPROP_STORE_SYSTEM, NULL },
++        { DEVPKEY_Device_InstanceId, DEVPROP_STORE_SYSTEM, NULL },
++    };
++    DEVPROPCOMPKEY *prop_keys = NULL;
++    struct aqs_expr *expr = NULL;
++    ULONG prop_keys_len = 0;
++    DEV_OBJECT_TYPE type;
++    IUnknown *params;
++    HRESULT hr;
++
++    TRACE( "iface %p, filter %s, additional_properties %p, kind %u, async_operation %p\n",
+             iface, debugstr_hstring( filter ), additional_properties, kind, async_operation );
+-    return E_NOTIMPL;
++
++    if (!async_operation) return E_POINTER;
++    *async_operation = NULL;
++    if ((type = object_type_from_device_information_kind( kind )) == DevObjectTypeUnknown) return E_INVALIDARG;
++
++    if (FAILED(hr = devpropcompkeys_init( &prop_keys, &prop_keys_len, device_iface_default_props, ARRAY_SIZE( device_iface_default_props ) ))) goto failed;
++    if (additional_properties && FAILED(hr = devpropcompkeys_append_names( &prop_keys, &prop_keys_len, additional_properties ))) goto failed;
++    if (FAILED(hr = aqs_parse_query( WindowsGetStringRawBuffer( filter, NULL ), &expr, NULL ))) goto failed;
++    if (FAILED(hr = devquery_params_create( type, expr, prop_keys, prop_keys_len, &params ))) goto failed;
++
++    hr = async_operation_inspectable_create( &IID_IAsyncOperation_DeviceInformationCollection, (IUnknown *)iface, params,
++                                             find_all_async, (IAsyncOperation_IInspectable **)async_operation );
++    IUnknown_Release( params );
++    return hr;
++
++failed:
++    free( prop_keys );
++    free_aqs_expr( expr );
++    return hr;
+ }
+ 
+ static const char *debugstr_DeviceInformationKind( DeviceInformationKind kind )

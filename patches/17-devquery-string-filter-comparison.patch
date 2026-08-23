@@ -1,0 +1,35 @@
+--- dlls/cfgmgr32/devobject.c.orig
++++ dlls/cfgmgr32/devobject.c
+@@ -84,15 +84,28 @@
+         int cmp = 0;
+ 
+         prop = bsearch( &filter->Property.CompKey, props, props_len, sizeof(*props), devproperty_compare );
+-        if (prop && cmp_prop->Type == prop->Type && cmp_prop->BufferSize == prop->BufferSize)
++        /* String buffer sizes are not comparable: a registry-backed value may or may not
++         * count its terminator, while a comparand built from a query string always does. */
++        if (prop && cmp_prop->Type == prop->Type
++            && (prop->Type == DEVPROP_TYPE_STRING || cmp_prop->BufferSize == prop->BufferSize))
+         {
+             switch (prop->Type)
+             {
+             case DEVPROP_TYPE_STRING:
+-                cmp = op & DEVPROP_OPERATOR_MODIFIER_IGNORE_CASE ? wcsicmp( prop->Buffer, cmp_prop->Buffer )
+-                                                                 : wcscmp( prop->Buffer, cmp_prop->Buffer );
+-                TRACE( "%s vs %s -> %u\n", debugstr_w(prop->Buffer), debugstr_w(cmp_prop->Buffer), !!cmp );
++            {
++                const WCHAR *lhs = prop->Buffer, *rhs = cmp_prop->Buffer;
++                ULONG lhs_len = prop->BufferSize / sizeof(WCHAR), rhs_len = cmp_prop->BufferSize / sizeof(WCHAR), len;
++
++                while (lhs_len && !lhs[lhs_len - 1]) lhs_len--;
++                while (rhs_len && !rhs[rhs_len - 1]) rhs_len--;
++                len = min( lhs_len, rhs_len );
++
++                cmp = op & DEVPROP_OPERATOR_MODIFIER_IGNORE_CASE ? wcsnicmp( lhs, rhs, len )
++                                                                 : wcsncmp( lhs, rhs, len );
++                if (!cmp) cmp = (lhs_len > rhs_len) - (lhs_len < rhs_len);
++                TRACE( "%s vs %s -> %u\n", debugstr_wn(lhs, lhs_len), debugstr_wn(rhs, rhs_len), !!cmp );
+                 break;
++            }
+             case DEVPROP_TYPE_GUID:
+                 /* Any other comparison operator other than DEVPROP_OPERATOR_EQUALS with GUIDs evaluates to false. */
+                 if (!(op & DEVPROP_OPERATOR_EQUALS)) break;

@@ -357,6 +357,31 @@ key L"{A45C254E-DF1C-4EFD-8020-67D146A850E0} 30"  ->  E_BOUNDS   (Address / port
 
 `patches/15-…` switches to upper-case, matching both Windows and Wine's own API.
 
+### 16. `FindAllAsync` on `IDeviceInformationStatics2` was a stub
+
+The `DeviceInformationKind` overload returned `E_NOTIMPL`. `patches/16-…` wires it
+to the same `find_all_async` worker the older overloads already use, mapping the
+kind to a `DEV_OBJECT_TYPE`.
+
+### 17. DevQuery string filters required identical buffer sizes
+
+A filter like
+
+```
+System.Devices.DeviceInstanceId:="USB\VID_1E71&PID_3012\512&258&3&4"
+```
+
+never matched, because `devprop_filter_eval_compare` only compares two values when
+`cmp_prop->BufferSize == prop->BufferSize`. A registry-backed string may or may not
+count its terminator, while a comparand built from a query string always does:
+
+```
+propSize=108   cmpSize=110      (same 54 characters)
+```
+
+so the comparison was skipped entirely and the filter evaluated false. `patches/17-…`
+compares string contents, ignoring a trailing terminator on either side.
+
 ## The USB device tree
 
 CAM correlates a HID interface with its WinUSB sibling by walking up to the USB hub
@@ -396,8 +421,20 @@ wine ~/.../system32/usbtree-fixup.exe -v
 
 ## Remaining work
 
-- **LCD:** `lcd.rs: Could not find WinUSB endpoint, LCD capabilities will not be
-  functional` — another `E_NOTIMPL` on the path that locates the WinUSB interface.
+- **LCD:** still `Could not find WinUSB endpoint`, now failing as
+  `Unexpected number of WinUSB devices: 0`. CAM issues two queries for a USB device
+  interface; the one naming the composite works and returns 1 object, but the one
+  naming the HID interface's own devnode returns 0:
+
+  ```
+  InstanceId:"USB\VID_1E71&PID_3012&MI_01\258&1F64…"  ->  0 objects
+  InstanceId:"USB\VID_1E71&PID_3012\512&258&3&4"      ->  1 object
+  ```
+
+  This is the two-bus split again, one level deeper: the devnode CAM knows about is
+  `winebus`'s, and the WinUSB interface belongs to `wineusb`'s separate devnode for
+  the same physical interface. Fixing it means either making the two buses share a
+  devnode, or mapping the interface across in `usbtree-fixup`.
 - **Firmware update:** untested.
 - Unrelated bug spotted while reading `dlls/wintypes/map.c`: `map_entry_clear` calls
   `IInspectable_AddRef` on the value it is about to drop, where it should `Release`.

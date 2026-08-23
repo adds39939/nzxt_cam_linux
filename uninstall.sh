@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# Remove everything the NZXT CAM install put on this machine.
+#
+#   curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/uninstall.sh | bash
+#
+# Removes the Wine prefix (CAM itself, its settings and logs all live inside it), the
+# launcher, and the menu entries and icons Wine's menu builder created. Optionally
+# restores the two patched Wine drivers to their stock versions, which needs root.
+#
+# Non-interactive use:
+#   ASSUME_YES=1 bash uninstall.sh            # also restores the drivers
+#   KEEP_DRIVERS=1 ASSUME_YES=1 bash uninstall.sh
+set -euo pipefail
+
+say()  { printf '\n\033[1;35m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33mWARNING:\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# When piped from curl, stdin is the script -- prompts must come from the terminal.
+if [ -r /dev/tty ] && [ -t 1 ]; then TTY=/dev/tty; else TTY=""; fi
+confirm() {
+    local reply=""
+    if [ -n "${ASSUME_YES:-}" ]; then return 0; fi
+    if [ -z "$TTY" ]; then return 1; fi
+    read -r -p "$1 [y/N]: " reply < "$TTY" || reply=""
+    case "$reply" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+}
+
+LAUNCHER="$HOME/.local/bin/nzxt-cam"
+
+# Which prefix? The launcher records it, so prefer that over guessing.
+PREFIX="${WINEPREFIX:-}"
+if [ -z "$PREFIX" ] && [ -f "$LAUNCHER" ]; then
+    PREFIX="$(sed -n 's/^export WINEPREFIX="\(.*\)"$/\1/p' "$LAUNCHER" | head -1)"
+fi
+PREFIX="${PREFIX:-$HOME/pfx/nzxt_cam}"
+
+# ------------------------------------------------------------------ what we found
+
+say "Looking for an installation"
+echo "    prefix: $PREFIX"
+
+FOUND=0
+PREFIX_OK=0
+if [ -d "$PREFIX" ]; then
+    # Only ever delete something that really is a Wine prefix, never a stray path.
+    if [ -d "$PREFIX/drive_c" ] && [ -f "$PREFIX/system.reg" ]; then
+        PREFIX_OK=1; FOUND=1
+        echo "    found Wine prefix ($(du -sh "$PREFIX" 2>/dev/null | cut -f1))"
+    else
+        warn "$PREFIX exists but is not a Wine prefix -- leaving it alone."
+    fi
+fi
+[ -f "$LAUNCHER" ] && { FOUND=1; echo "    found launcher: $LAUNCHER"; }
+
+# Menu entries and icons that Wine's menu builder generated. These live in shared XDG
+# directories next to every other application, so they cannot be removed a directory at
+# a time -- but nothing here is a fixed list either: entries are discovered, by what
+# they point at (any file naming this prefix is ours) and by name, so anything CAM
+# gains later is still found. Whole directories are taken whole where they are ours.
+XDG_DIRS=(
+    "$HOME/.local/share/applications"
+    "$HOME/.config/menus"
+    "$HOME/.local/share/desktop-directories"
+    "$HOME/Desktop"
+)
+
+DESKTOP_DIRS=()
+DESKTOP_ITEMS=()
+seen_item() { local i; for i in "${DESKTOP_ITEMS[@]:-}"; do [ "$i" = "$1" ] && return 0; done; return 1; }
+
+for d in "${XDG_DIRS[@]}"; do
+    [ -d "$d" ] || continue
+    # Directories belonging to CAM go wholesale, with whatever is inside them.
+    while IFS= read -r -d '' sub; do DESKTOP_DIRS+=("$sub"); done < <(
+        find "$d" -type d -iname "*NZXT*" -print0 2>/dev/null)
+    # Files that name this prefix, whatever they happen to be called.
+    while IFS= read -r -d '' f; do
+        seen_item "$f" || DESKTOP_ITEMS+=("$f")
+    done < <(grep -rlZ -F "$PREFIX" "$d" 2>/dev/null)
+    # ...and files named for CAM, which is how icons are identifiable at all.
+    while IFS= read -r -d '' f; do
+        seen_item "$f" || DESKTOP_ITEMS+=("$f")
+    done < <(find "$d" -type f -iname "*NZXT*" -print0 2>/dev/null)
+done
+
+# Icons carry no path inside them, so they can only be matched by name.
+if [ -d "$HOME/.local/share/icons" ]; then
+    while IFS= read -r -d '' f; do
+        seen_item "$f" || DESKTOP_ITEMS+=("$f")
+    done < <(find "$HOME/.local/share/icons" -iname "*NZXT*" -print0 2>/dev/null)
+fi
+
+if [ ${#DESKTOP_DIRS[@]} -gt 0 ] || [ ${#DESKTOP_ITEMS[@]} -gt 0 ]; then
+    FOUND=1
+    echo "    found $(( ${#DESKTOP_DIRS[@]} + ${#DESKTOP_ITEMS[@]} )) menu entr(ies)/icon(s)"
+fi
+
+# Patched drivers, detected by the backups the installer left next to them.
+DRIVER_BACKUPS=()
+for b in /usr/lib/wine/x86_64-windows/hidclass.sys.stock-backup \
+         /usr/lib/wine/x86_64-windows/wineusb.sys.stock-backup \
+         /usr/lib/wine/x86_64-unix/wineusb.so.stock-backup; do
+    [ -f "$b" ] && DRIVER_BACKUPS+=("$b")
+done
+if [ ${#DRIVER_BACKUPS[@]} -gt 0 ]; then
+    FOUND=1
+    echo "    found ${#DRIVER_BACKUPS[@]} patched Wine driver(s) with stock backups"
+fi
+
+if [ "$FOUND" -eq 0 ]; then
+    say "Nothing to remove -- no prefix, launcher, menu entries or patched drivers found."
+    exit 0
+fi
+
+# ----------------------------------------------------------------------- confirm
+
+say "This will remove"
+[ "$PREFIX_OK" -eq 1 ] && echo "    $PREFIX   (CAM, its settings, profiles and logs)"
+[ -f "$LAUNCHER" ]     && echo "    $LAUNCHER"
+for f in "${DESKTOP_DIRS[@]:-}";  do [ -n "$f" ] && echo "    $f/   (whole directory)"; done
+for f in "${DESKTOP_ITEMS[@]:-}"; do [ -n "$f" ] && echo "    $f"; done
+if [ ${#DRIVER_BACKUPS[@]} -gt 0 ] && [ -z "${KEEP_DRIVERS:-}" ]; then
+    echo "    and restore Wine's stock drivers (needs sudo)"
+fi
+echo
+confirm "    Go ahead?" || die "aborted, nothing was removed"
+
+# ------------------------------------------------------------------------ remove
+
+if [ "$PREFIX_OK" -eq 1 ]; then
+    say "Stopping anything still running in the prefix"
+    WINEPREFIX="$PREFIX" wineserver -k >/dev/null 2>&1 || true
+    sleep 2
+
+    say "Removing the prefix"
+    rm -rf "$PREFIX"
+    # Take ~/pfx with it, but only when we were the only thing in it.
+    parent="$(dirname "$PREFIX")"
+    if [ "$parent" != "$HOME" ] && [ -d "$parent" ] && [ -z "$(ls -A "$parent" 2>/dev/null)" ]; then
+        rmdir "$parent" && echo "    also removed empty $parent"
+    fi
+fi
+
+if [ -f "$LAUNCHER" ]; then
+    say "Removing the launcher"
+    rm -f "$LAUNCHER"
+fi
+
+if [ ${#DESKTOP_DIRS[@]} -gt 0 ] || [ ${#DESKTOP_ITEMS[@]} -gt 0 ]; then
+    say "Removing menu entries and icons"
+    for f in "${DESKTOP_DIRS[@]:-}";  do [ -n "$f" ] && rm -rf "$f" && echo "    $f/"; done
+    for f in "${DESKTOP_ITEMS[@]:-}"; do [ -n "$f" ] && rm -f  "$f" && echo "    $f"; done
+    # Wine's own menu directories, only if CAM was the last thing in them.
+    for d in "$HOME/.local/share/applications/wine/Programs" \
+             "$HOME/.local/share/applications/wine"; do
+        [ -d "$d" ] && [ -z "$(ls -A "$d" 2>/dev/null)" ] && rmdir "$d" && echo "    $d (empty)"
+    done
+    command -v update-desktop-database >/dev/null 2>&1 &&
+        update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+fi
+
+if [ ${#DRIVER_BACKUPS[@]} -gt 0 ] && [ -z "${KEEP_DRIVERS:-}" ]; then
+    say "Restoring Wine's stock drivers"
+    echo "    These were replaced system-wide, so putting them back needs root."
+    if confirm "    Restore them now with sudo?"; then
+        for b in "${DRIVER_BACKUPS[@]}"; do
+            sudo mv -f "$b" "${b%.stock-backup}" && echo "    restored ${b%.stock-backup}"
+        done
+    else
+        echo
+        echo "    Skipped. Wine is still using the patched drivers. To undo later:"
+        for b in "${DRIVER_BACKUPS[@]}"; do
+            echo "      sudo mv -f $b ${b%.stock-backup}"
+        done
+    fi
+fi
+
+say "Done"
+echo "    NZXT CAM has been removed."
+echo
+echo "    Reinstall any time with:"
+echo "      curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/install.sh | bash"

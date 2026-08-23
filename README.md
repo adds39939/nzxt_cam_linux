@@ -116,6 +116,27 @@ Wine DPI (LogPixels) = 120         cam.log = 4600,     device detected, DPR 1.25
 
 ---
 
+## Uninstall
+
+```bash
+curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/uninstall.sh | bash
+```
+
+That removes the Wine prefix -- CAM itself, its settings, profiles and logs all live
+inside it -- along with the launcher and the menu entries and icons Wine created. It
+then offers to put Wine's stock drivers back, which needs `sudo`; the installer kept
+copies of the originals for exactly that.
+
+It works out which prefix to remove by reading it back out of the launcher, so a
+non-default `WINEPREFIX` is handled without being told. Nothing is deleted before it
+has shown you the list and asked, and it will only ever delete a directory that really
+is a Wine prefix.
+
+```bash
+ASSUME_YES=1 bash uninstall.sh      # unattended
+KEEP_DRIVERS=1 bash uninstall.sh    # leave the patched Wine drivers in place
+```
+
 ## What works
 
 * ✅ **Kraken Elite V2 detected** (`1e71:3012`) and driven over WinUSB
@@ -203,9 +224,9 @@ curl -s http://127.0.0.1:9222/json    # then drive it over CDP
 **Logs:** `~/pfx/nzxt_cam/drive_c/users/$USER/AppData/Roaming/NZXT CAM/logs/`
 (`main.log`, `renderer.log`, `cam.log`, `cam_helper.log`).
 
-**Undo everything:** delete the prefix (`rm -rf ~/pfx/nzxt_cam`) and
-`~/.local/bin/nzxt-cam`. `setup.sh` also leaves `.stock-backup` copies of the DLLs it
-replaces in the prefix's `system32`.
+**Undo everything:** see [Uninstall](#uninstall) above. `setup.sh` also leaves
+`.stock-backup` copies of the DLLs it replaces in the prefix's `system32`, but those
+go with the prefix.
 
 ## Kernel drivers need root
 

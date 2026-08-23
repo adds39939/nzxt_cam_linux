@@ -1,0 +1,37 @@
+--- dlls/cfgmgr32/cfgmgr32.c.orig	2026-08-23 03:45:45.605938539 +0100
++++ dlls/cfgmgr32/cfgmgr32.c	2026-08-23 03:45:45.612621281 +0100
+@@ -533,14 +533,30 @@
+         }
+     }
+ 
++    /* Properties are stored as Properties\\{fmtid}\\{pid}, i.e. a subkey per property set
++     * and a subkey per property ID (see propkey_string), not as values under Properties. */
+     swprintf( path, ARRAY_SIZE(path), L"%s\\Properties", iface->refstr );
+     if (!open_key( hkey, path, KEY_ENUMERATE_SUB_KEYS, TRUE, &props_key ))
+     {
+-        WCHAR name[MAX_PATH];
+-        for (ULONG i = 0, len = ARRAY_SIZE(name); !RegEnumValueW( props_key, i, name, &len, 0, NULL, NULL, NULL ); i++, len = ARRAY_SIZE(name))
++        WCHAR fmtid[64];
++        ULONG i, fmtid_len = ARRAY_SIZE(fmtid);
++
++        for (i = 0; !RegEnumKeyExW( props_key, i, fmtid, &fmtid_len, NULL, NULL, NULL, NULL );
++             i++, fmtid_len = ARRAY_SIZE(fmtid))
+         {
+-            if (capacity < ++count || !buffer) err = ERROR_MORE_DATA;
+-            else err = propkey_from_string( name, buffer + count - 1 );
++            WCHAR pid[64], name[MAX_PATH];
++            ULONG j, pid_len = ARRAY_SIZE(pid);
++            HKEY fmtid_key;
++
++            if (open_key( props_key, fmtid, KEY_ENUMERATE_SUB_KEYS, TRUE, &fmtid_key )) continue;
++            for (j = 0; !RegEnumKeyExW( fmtid_key, j, pid, &pid_len, NULL, NULL, NULL, NULL );
++                 j++, pid_len = ARRAY_SIZE(pid))
++            {
++                swprintf( name, ARRAY_SIZE(name), L"%s\\%s", fmtid, pid );
++                if (capacity < ++count || !buffer) err = ERROR_MORE_DATA;
++                else err = propkey_from_string( name, buffer + count - 1 );
++            }
++            RegCloseKey( fmtid_key );
+         }
+         RegCloseKey( props_key );
+     }

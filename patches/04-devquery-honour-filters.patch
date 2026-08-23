@@ -1,0 +1,113 @@
+--- dlls/cfgmgr32/devobject.c.orig	2026-08-23 03:25:06.533333746 +0100
++++ dlls/cfgmgr32/devobject.c	2026-08-23 03:25:06.540111959 +0100
+@@ -595,7 +595,8 @@
+     ULONG flags;
+     ULONG prop_keys_len;
+     DEVPROPCOMPKEY *prop_keys;
+-    BOOL filters;
++    DEVPROP_FILTER_EXPRESSION *filters;
++    ULONG filters_len;
+ 
+     CRITICAL_SECTION cs;
+     PDEV_QUERY_RESULT_CALLBACK callback;
+@@ -705,11 +706,60 @@
+     free( path );
+ }
+ 
++static void free_query_filters( DEVPROP_FILTER_EXPRESSION *filters, ULONG len )
++{
++    ULONG i;
++
++    if (!filters) return;
++    for (i = 0; i < len; i++)
++    {
++        free( (void *)filters[i].Property.CompKey.LocaleName );
++        free( filters[i].Property.Buffer );
++    }
++    free( filters );
++}
++
++/* The caller only guarantees the filters for the duration of the call, but the query
++ * is evaluated asynchronously, so take a deep copy. */
++static DEVPROP_FILTER_EXPRESSION *copy_query_filters( const DEVPROP_FILTER_EXPRESSION *filters, ULONG len )
++{
++    DEVPROP_FILTER_EXPRESSION *ret;
++    ULONG i;
++
++    if (!(ret = calloc( len, sizeof( *ret ) ))) return NULL;
++    for (i = 0; i < len; i++)
++    {
++        ret[i] = filters[i];
++        ret[i].Property.Buffer = NULL;
++        ret[i].Property.CompKey.LocaleName = NULL;
++        if (filters[i].Property.Buffer && filters[i].Property.BufferSize)
++        {
++            if (!(ret[i].Property.Buffer = malloc( filters[i].Property.BufferSize ))) goto failed;
++            memcpy( ret[i].Property.Buffer, filters[i].Property.Buffer, filters[i].Property.BufferSize );
++        }
++        if (filters[i].Property.CompKey.LocaleName)
++        {
++            SIZE_T size = (wcslen( filters[i].Property.CompKey.LocaleName ) + 1) * sizeof( WCHAR );
++            WCHAR *name;
++
++            if (!(name = malloc( size ))) goto failed;
++            memcpy( name, filters[i].Property.CompKey.LocaleName, size );
++            ret[i].Property.CompKey.LocaleName = name;
++        }
++    }
++    return ret;
++
++failed:
++    free_query_filters( ret, len );
++    return NULL;
++}
++
+ static void device_query_context_release( struct device_query_context *ctx )
+ {
+     if (!InterlockedDecrement( &ctx->ref ))
+     {
+         free( ctx->prop_keys );
++        free_query_filters( ctx->filters, ctx->filters_len );
+         ctx->cs.DebugInfo->Spare[0] = 0;
+         DeleteCriticalSection( &ctx->cs );
+         if (ctx->closed) CloseHandle( ctx->closed );
+@@ -907,9 +957,9 @@
+     LSTATUS err = ERROR_SUCCESS;
+     BOOL success;
+ 
+-    if (!ctx->filters)
+-        err = enum_dev_objects( ctx->type, ctx->prop_keys, ctx->prop_keys_len, !!(ctx->flags & DevQueryFlagAllProperties),
+-                               0, NULL, device_query_context_add_object, ctx );
++    err = enum_dev_objects( ctx->type, ctx->prop_keys, ctx->prop_keys_len, !!(ctx->flags & DevQueryFlagAllProperties),
++                            ctx->filters, ctx->filters ? ctx->filters + ctx->filters_len : NULL,
++                            device_query_context_add_object, ctx );
+ 
+     EnterCriticalSection( &ctx->cs );
+     if (ctx->state == DevQueryStateClosed)
+@@ -1000,8 +1050,6 @@
+         || (props_len && (flags & DevQueryFlagAllProperties))
+         || (filters && !devprop_filters_validate( filters, filters + filters_len )))
+         return E_INVALIDARG;
+-    if (filters)
+-        FIXME( "Query filters are not supported!\n" );
+     if (params)
+         FIXME( "Query parameters are not supported!\n" );
+ 
+@@ -1009,7 +1057,16 @@
+     if (FAILED( hr ))
+         return hr;
+ 
+-    ctx->filters = !!filters;
++    if (filters)
++    {
++        if (!(ctx->filters = copy_query_filters( filters, filters_len )))
++        {
++            device_query_context_release( ctx );
++            *devquery = NULL;
++            return E_OUTOFMEMORY;
++        }
++        ctx->filters_len = filters_len;
++    }
+     device_query_context_addref( ctx );
+     if (!TrySubmitThreadpoolCallback( device_query_enum_objects_async, ctx, NULL ))
+         hr = HRESULT_FROM_WIN32( GetLastError() );

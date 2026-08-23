@@ -1,0 +1,47 @@
+--- dlls/hidclass.sys/pnp.c.orig	2026-08-23 02:57:40.594616733 +0100
++++ dlls/hidclass.sys/pnp.c	2026-08-23 03:13:44.183649579 +0100
+@@ -23,6 +23,17 @@
+ #include <stdlib.h>
+ #include "initguid.h"
+ #include "hid.h"
++#include "winnls.h"
++#include "devpkey.h"
++
++/* HID device interface properties. Windows publishes these on every HID device
++ * interface; Wine's devpkey.h does not declare them yet. GUID matches
++ * DEVPKEY_DeviceInterface_HID_* / PKEY_DeviceInterface_Hid_*. */
++DEFINE_DEVPROPKEY(DEVPKEY_DeviceInterface_HID_UsagePage,     0xcbf38310,0x4a17,0x4310,0xa1,0xeb,0x24,0x7f,0x0b,0x67,0x59,0x3b, 2);
++DEFINE_DEVPROPKEY(DEVPKEY_DeviceInterface_HID_UsageId,       0xcbf38310,0x4a17,0x4310,0xa1,0xeb,0x24,0x7f,0x0b,0x67,0x59,0x3b, 3);
++DEFINE_DEVPROPKEY(DEVPKEY_DeviceInterface_HID_VendorId,      0xcbf38310,0x4a17,0x4310,0xa1,0xeb,0x24,0x7f,0x0b,0x67,0x59,0x3b, 5);
++DEFINE_DEVPROPKEY(DEVPKEY_DeviceInterface_HID_ProductId,     0xcbf38310,0x4a17,0x4310,0xa1,0xeb,0x24,0x7f,0x0b,0x67,0x59,0x3b, 6);
++DEFINE_DEVPROPKEY(DEVPKEY_DeviceInterface_HID_VersionNumber, 0xcbf38310,0x4a17,0x4310,0xa1,0xeb,0x24,0x7f,0x0b,0x67,0x59,0x3b, 7);
+ #include "devguid.h"
+ #include "ntddmou.h"
+ #include "ntddkbd.h"
+@@ -562,6 +573,26 @@
+                 break;
+             }
+ 
++            /* Applications select HID devices on these interface properties -- notably
++             * Windows.Devices.Enumeration AQS filters like "System.DeviceInterface.Hid.VendorId".
++             * Without them such a query matches nothing and the device appears absent. */
++            {
++                UINT16 vid = pdo->information.VendorID, pid = pdo->information.ProductID;
++                UINT16 version = pdo->information.VersionNumber;
++                UINT16 usage_page = desc->UsagePage, usage = desc->Usage;
++
++                IoSetDeviceInterfacePropertyData( &pdo->link_name, &DEVPKEY_DeviceInterface_HID_VendorId,
++                                                  LOCALE_NEUTRAL, 0, DEVPROP_TYPE_UINT16, sizeof(vid), &vid );
++                IoSetDeviceInterfacePropertyData( &pdo->link_name, &DEVPKEY_DeviceInterface_HID_ProductId,
++                                                  LOCALE_NEUTRAL, 0, DEVPROP_TYPE_UINT16, sizeof(pid), &pid );
++                IoSetDeviceInterfacePropertyData( &pdo->link_name, &DEVPKEY_DeviceInterface_HID_VersionNumber,
++                                                  LOCALE_NEUTRAL, 0, DEVPROP_TYPE_UINT16, sizeof(version), &version );
++                IoSetDeviceInterfacePropertyData( &pdo->link_name, &DEVPKEY_DeviceInterface_HID_UsagePage,
++                                                  LOCALE_NEUTRAL, 0, DEVPROP_TYPE_UINT16, sizeof(usage_page), &usage_page );
++                IoSetDeviceInterfacePropertyData( &pdo->link_name, &DEVPKEY_DeviceInterface_HID_UsageId,
++                                                  LOCALE_NEUTRAL, 0, DEVPROP_TYPE_UINT16, sizeof(usage), &usage );
++            }
++
+             /* FIXME: This should probably be done in mouhid.sys. */
+             if (desc->UsagePage == HID_USAGE_PAGE_GENERIC && desc->Usage == HID_USAGE_GENERIC_MOUSE)
+             {

@@ -47,20 +47,14 @@ err:ntoskrnl:ZwLoadDriver failed to create driver L"...\cpuz162": c0000142
 
 Temperature and Fan stay `n/a`. This is not fixable in userspace.
 
-**NZXT USB device control (Kraken, RGB & Fan controllers) is unverified** — I had no
-NZXT hardware attached to test. Device *enumeration* is fixed (see fix #2/#3), but
-Wine's `hidclass.sys` never calls `IoSetDeviceInterfacePropertyData`, so it doesn't
-publish the `DEVPKEY_DeviceInterface_HID_VendorId`/`ProductId` that CAM filters on.
-If your hardware doesn't appear, that's why.
-
-> For **actual hardware control** on Linux, use [`liquidctl`](https://github.com/liquidctl/liquidctl)
-> or [CoolerControl](https://gitlab.com/coolercontrol/coolercontrol) — they drive NZXT
-> Kraken coolers, Smart Device, RGB & Fan Controllers and HUE 2 natively over hidraw.
-> This repo is for people who specifically want CAM's UI.
+**NZXT device control** needs fixes #3–#8. CAM discovers every NZXT device through
+`GUID_DEVINTERFACE_USB_DEVICE` and drives it over **WinUSB** — cam-core has no HID
+device module at all, only `nzxt-device\src\device\usb\`. Wine registered no USB
+device interfaces and `winusb.dll` was 21 stubs, so CAM saw nothing.
 
 ---
 
-## The four fixes
+## The fixes
 
 ### 1. No fonts → blank window, then a renderer crash  ← the big one
 
@@ -219,3 +213,67 @@ corresponding-source pointers and rebuild instructions.
 
 No NZXT code or assets are redistributed here; get CAM from NZXT. This project
 is unaffiliated with NZXT.
+
+
+### 5. DevQuery enumerated properties from the wrong registry level
+
+`propkey_string()` stores device-interface properties under
+`Properties\{FMTID}\{PID}` (a subkey per property set, then per property ID), but
+`enum_device_interface_property_keys()` called `RegEnumValueW` on `Properties`
+itself and found nothing — so only 3 hardcoded properties were ever returned.
+
+**Fix:** `patches/05-…` walks both subkey levels. Properties returned went 3 → 7.
+
+### 6. `IDeviceInformation2` was not implemented
+
+CAM queries every `DeviceInformation` for `IDeviceInformation2`
+(`{f156a638-7997-48d9-a10c-269d46533f48}`) and discards the device on
+`E_NOINTERFACE`. Upstream Wine has the interface **commented out** in
+`windows.devices.enumeration.idl`.
+
+**Fix:** `patches/06-…` declares it (with `Pairing` typed as `IInspectable*`, since
+`DeviceInformationPairing` doesn't exist in Wine — the vtable layout is identical)
+and implements `get_Kind`.
+
+### 7. No USB device interfaces were registered at all
+
+`wineusb.sys` creates PDOs but never calls `IoRegisterDeviceInterface`, so
+`SetupDiEnumDeviceInterfaces(GUID_DEVINTERFACE_USB_DEVICE)` returned nothing and CAM
+could not discover any NZXT device.
+
+**Fix:** `patches/07-…` registers `GUID_DEVINTERFACE_USB_DEVICE` per device and
+publishes `DEVPKEY_DeviceInterface_WinUsb_UsbVendorId`/`UsbProductId`.
+
+### 8. `winusb.dll` was 21 stubs
+
+With the device finally visible, CAM called `WinUsb_Initialize` — which aborted the
+process with `EXCEPTION_WINE_STUB`. Only `WinUsb_Free` existed. WinUSB support does
+not exist in upstream Wine.
+
+**Fix:** `patches/08-…` implements it in two parts:
+
+- **`wineusb.sys`** gains `IOCTL_WINEUSB_SUBMIT_URB`, a buffered device-control code
+  carrying control / bulk / descriptor / reset / abort requests. Wine previously only
+  exposed `IOCTL_INTERNAL_USB_SUBMIT_URB`, which user mode cannot reach. The URB is
+  heap-allocated and freed on completion, which also reports the transferred length.
+- **`winusb.dll`** implements `Initialize`, `QueryInterfaceSettings`, `QueryPipe`,
+  `ControlTransfer`, `ReadPipe`, `WritePipe`, `GetDescriptor`, `ResetPipe`,
+  `AbortPipe` and `GetAssociatedInterface` on top of it. `Initialize` caches the
+  configuration descriptor; `QueryPipe` walks it to locate endpoints (this is how
+  CAM finds the bulk endpoint used for the LCD).
+
+The kernel IOCTL is deliberately a **generic passthrough**, so further work needs no
+kernel changes — `winusb.dll` installs into the prefix like the other user-mode DLLs.
+
+## Kernel drivers need root
+
+`hidclass.sys` and `wineusb.sys` are drivers. Wine loads builtin drivers from its
+install directory, not the prefix, and a driver **cannot** be overridden per-prefix —
+marking one `native` makes `winehid` fail with `STATUS_DLL_INIT_FAILED` and breaks all
+HID. Install them with:
+
+```bash
+sudo ./scripts/install-wine-drivers.sh
+```
+
+Re-run it after any `wine` package upgrade, which overwrites them.

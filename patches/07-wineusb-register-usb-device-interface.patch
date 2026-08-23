@@ -1,0 +1,320 @@
+--- dlls/wineusb.sys/wineusb.c.orig	2026-08-23 04:00:06.014058475 +0100
++++ dlls/wineusb.sys/wineusb.c	2026-08-23 04:20:09.239930888 +0100
+@@ -24,6 +24,7 @@
+ #include <stdint.h>
+ #include <stdlib.h>
+ 
++#include "initguid.h"
+ #include "ntstatus.h"
+ #include "windef.h"
+ #include "winioctl.h"
+@@ -36,6 +37,16 @@
+ #include "wine/list.h"
+ 
+ #include "unixlib.h"
++#include "wine/wineusb.h"
++#include "winnls.h"
++#include "devpkey.h"
++
++/* Registered by the hub driver on Windows for every USB device; applications
++ * enumerate USB devices through it (SetupDiGetClassDevs / DeviceInformation). */
++DEFINE_GUID(GUID_DEVINTERFACE_USB_DEVICE, 0xa5dcbf10, 0x6530, 0x11d2, 0x90, 0x1f, 0x00, 0xc0, 0x4f, 0xb9, 0x51, 0xed);
++/* Published by winusb.sys on its device interfaces. */
++DEFINE_DEVPROPKEY(DEVPKEY_DeviceInterface_WinUsb_UsbVendorId,  0x95e127b5, 0x79cc, 0x4e83, 0x9c, 0x9e, 0x84, 0x22, 0x18, 0x7b, 0x3e, 0x0e, 2);
++DEFINE_DEVPROPKEY(DEVPKEY_DeviceInterface_WinUsb_UsbProductId, 0x95e127b5, 0x79cc, 0x4e83, 0x9c, 0x9e, 0x84, 0x22, 0x18, 0x7b, 0x3e, 0x0e, 3);
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(wineusb);
+ 
+@@ -83,6 +94,8 @@
+ 
+     struct unix_device *unix_device;
+ 
++    UNICODE_STRING link_name;
++
+     LIST_ENTRY irp_list;
+ };
+ 
+@@ -173,12 +186,46 @@
+ 
+ static HANDLE event_thread;
+ 
++/* Number of bytes actually transferred, for the URB types we submit. */
++static ULONG urb_transfer_length(const URB *urb)
++{
++    switch (urb->UrbHeader.Function)
++    {
++        case URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER:
++            return urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
++        case URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE:
++            return urb->UrbControlDescriptorRequest.TransferBufferLength;
++        case URB_FUNCTION_VENDOR_DEVICE:
++        case URB_FUNCTION_VENDOR_INTERFACE:
++        case URB_FUNCTION_VENDOR_ENDPOINT:
++            return urb->UrbControlVendorClassRequest.TransferBufferLength;
++        default:
++            return 0;
++    }
++}
++
+ static void complete_irp(IRP *irp)
+ {
++    IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
++
+     EnterCriticalSection(&wineusb_cs);
+     RemoveEntryList(&irp->Tail.Overlay.ListEntry);
+     LeaveCriticalSection(&wineusb_cs);
+ 
++    /* URBs submitted from user mode own a heap URB and must report how much of
++     * the buffered output the I/O manager should copy back. */
++    if (stack->MajorFunction == IRP_MJ_DEVICE_CONTROL
++            && stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_WINEUSB_SUBMIT_URB)
++    {
++        struct wineusb_urb_request *req = irp->AssociatedIrp.SystemBuffer;
++        URB *urb = irp->Tail.Overlay.DriverContext[1];
++
++        req->transfer_length = urb_transfer_length(urb);
++        irp->IoStatus.Information = sizeof(*req) + req->transfer_length;
++        ExFreePool(urb);
++        irp->Tail.Overlay.DriverContext[1] = NULL;
++    }
++
+     irp->IoStatus.Status = STATUS_SUCCESS;
+     IoCompleteRequest(irp, IO_NO_INCREMENT);
+ }
+@@ -480,6 +527,29 @@
+         }
+ 
+         case IRP_MN_START_DEVICE:
++            /* Expose whole devices (not individual interfaces) under
++             * GUID_DEVINTERFACE_USB_DEVICE, as the Windows hub driver does. Without this,
++             * applications enumerating USB devices find nothing at all. */
++            if (!device->interface && !device->link_name.Buffer)
++            {
++                NTSTATUS status;
++
++                if (!(status = IoRegisterDeviceInterface(device_obj, &GUID_DEVINTERFACE_USB_DEVICE,
++                                                         NULL, &device->link_name)))
++                {
++                    UINT16 vendor = device->vendor, product = device->product;
++
++                    IoSetDeviceInterfacePropertyData(&device->link_name,
++                            &DEVPKEY_DeviceInterface_WinUsb_UsbVendorId, LOCALE_NEUTRAL, 0,
++                            DEVPROP_TYPE_UINT16, sizeof(vendor), &vendor);
++                    IoSetDeviceInterfacePropertyData(&device->link_name,
++                            &DEVPKEY_DeviceInterface_WinUsb_UsbProductId, LOCALE_NEUTRAL, 0,
++                            DEVPROP_TYPE_UINT16, sizeof(product), &product);
++                    IoSetDeviceInterfaceState(&device->link_name, TRUE);
++                }
++                else
++                    ERR("Failed to register interface, status %#lx.\n", status);
++            }
+             ret = STATUS_SUCCESS;
+             break;
+ 
+@@ -490,6 +560,7 @@
+             {
+                 device->removed = TRUE;
+                 list_remove(&device->entry);
++                if (device->link_name.Buffer) IoSetDeviceInterfaceState(&device->link_name, FALSE);
+             }
+             LeaveCriticalSection(&wineusb_cs);
+             ret = STATUS_SUCCESS;
+@@ -501,6 +572,7 @@
+ 
+             destroy_unix_device(device->unix_device);
+ 
++            RtlFreeUnicodeString(&device->link_name);
+             IoDeleteDevice(device->device_obj);
+             ret = STATUS_SUCCESS;
+             break;
+@@ -525,9 +597,8 @@
+     return pdo_pnp(device, irp);
+ }
+ 
+-static NTSTATUS usb_submit_urb(struct usb_device *device, IRP *irp)
++static NTSTATUS usb_submit_urb_urb(struct usb_device *device, IRP *irp, URB *urb)
+ {
+-    URB *urb = IoGetCurrentIrpStackLocation(irp)->Parameters.Others.Argument1;
+     NTSTATUS status;
+ 
+     TRACE("type %#x.\n", urb->UrbHeader.Function);
+@@ -630,6 +701,161 @@
+     return STATUS_NOT_IMPLEMENTED;
+ }
+ 
++/* Pipe handles are (endpoint | type << 8); see get_pipe() in the Unix library. */
++static HANDLE make_pipe_handle(UCHAR endpoint, USBD_PIPE_TYPE type)
++{
++    return (HANDLE)(ULONG_PTR)(endpoint | (type << 8));
++}
++
++/* Translate a buffered user-mode request into a URB and submit it. The URB is
++ * heap-allocated because the transfer may complete asynchronously; complete_irp()
++ * frees it and reports the transferred length. */
++static NTSTATUS usb_submit_user_urb(struct usb_device *device, IRP *irp)
++{
++    IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
++    ULONG in_size = stack->Parameters.DeviceIoControl.InputBufferLength;
++    ULONG out_size = stack->Parameters.DeviceIoControl.OutputBufferLength;
++    struct wineusb_urb_request *req = irp->AssociatedIrp.SystemBuffer;
++    void *buffer;
++    NTSTATUS status;
++    URB *urb;
++
++    if (in_size < sizeof(*req) || out_size < sizeof(*req))
++        return STATUS_BUFFER_TOO_SMALL;
++    if (req->transfer_length > max(in_size, out_size) - sizeof(*req))
++        return STATUS_INVALID_PARAMETER;
++
++    if (!(urb = ExAllocatePool(NonPagedPool, sizeof(*urb))))
++        return STATUS_NO_MEMORY;
++    memset(urb, 0, sizeof(*urb));
++    buffer = (char *)req + sizeof(*req);
++
++    switch (req->type)
++    {
++        case WINEUSB_URB_CONTROL:
++        {
++            struct _URB_CONTROL_VENDOR_OR_CLASS_REQUEST *r = &urb->UrbControlVendorClassRequest;
++
++            /* bits 0-4 of bmRequestType select the recipient */
++            switch (req->request_type & 0x1f)
++            {
++                case 1:  urb->UrbHeader.Function = URB_FUNCTION_VENDOR_INTERFACE; break;
++                case 2:  urb->UrbHeader.Function = URB_FUNCTION_VENDOR_ENDPOINT; break;
++                default: urb->UrbHeader.Function = URB_FUNCTION_VENDOR_DEVICE; break;
++            }
++            urb->UrbHeader.Length = sizeof(*r);
++            r->TransferFlags = (req->flags & WINEUSB_TRANSFER_IN) ? USBD_TRANSFER_DIRECTION_IN : 0;
++            r->TransferBufferLength = req->transfer_length;
++            r->TransferBuffer = req->transfer_length ? buffer : NULL;
++            r->RequestTypeReservedBits = req->request_type;
++            r->Request = req->request;
++            r->Value = req->value;
++            r->Index = req->index;
++            break;
++        }
++
++        case WINEUSB_URB_BULK:
++        {
++            struct _URB_BULK_OR_INTERRUPT_TRANSFER *r = &urb->UrbBulkOrInterruptTransfer;
++
++            urb->UrbHeader.Function = URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER;
++            urb->UrbHeader.Length = sizeof(*r);
++            r->PipeHandle = make_pipe_handle(req->endpoint,
++                    (req->endpoint & 0x80) ? UsbdPipeTypeBulk : UsbdPipeTypeBulk);
++            r->TransferFlags = (req->flags & WINEUSB_TRANSFER_IN) ? USBD_TRANSFER_DIRECTION_IN : 0;
++            r->TransferBufferLength = req->transfer_length;
++            r->TransferBuffer = req->transfer_length ? buffer : NULL;
++            break;
++        }
++
++        case WINEUSB_URB_DESCRIPTOR:
++        {
++            struct _URB_CONTROL_DESCRIPTOR_REQUEST *r = &urb->UrbControlDescriptorRequest;
++
++            urb->UrbHeader.Function = URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE;
++            urb->UrbHeader.Length = sizeof(*r);
++            r->TransferBufferLength = req->transfer_length;
++            r->TransferBuffer = req->transfer_length ? buffer : NULL;
++            r->Index = req->descriptor_index;
++            r->DescriptorType = req->descriptor_type;
++            r->LanguageId = req->index;
++            break;
++        }
++
++        case WINEUSB_URB_RESET_PIPE:
++        {
++            struct _URB_PIPE_REQUEST *r = &urb->UrbPipeRequest;
++
++            urb->UrbHeader.Function = URB_FUNCTION_SYNC_RESET_PIPE_AND_CLEAR_STALL;
++            urb->UrbHeader.Length = sizeof(*r);
++            r->PipeHandle = make_pipe_handle(req->endpoint, UsbdPipeTypeBulk);
++            break;
++        }
++
++        case WINEUSB_URB_ABORT_PIPE:
++            urb->UrbHeader.Function = URB_FUNCTION_ABORT_PIPE;
++            urb->UrbHeader.Length = sizeof(urb->UrbPipeRequest);
++            break;
++
++        default:
++            FIXME("Unhandled request type %#lx.\n", req->type);
++            ExFreePool(urb);
++            return STATUS_NOT_IMPLEMENTED;
++    }
++
++    irp->Tail.Overlay.DriverContext[1] = urb;
++    status = usb_submit_urb_urb(device, irp, urb);
++    if (status != STATUS_PENDING)
++    {
++        req->transfer_length = urb_transfer_length(urb);
++        irp->IoStatus.Information = sizeof(*req) + req->transfer_length;
++        ExFreePool(urb);
++        irp->Tail.Overlay.DriverContext[1] = NULL;
++    }
++    return status;
++}
++
++static NTSTATUS WINAPI driver_ioctl(DEVICE_OBJECT *device_obj, IRP *irp)
++{
++    IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
++    ULONG code = stack->Parameters.DeviceIoControl.IoControlCode;
++    struct usb_device *device = device_obj->DeviceExtension;
++    NTSTATUS status = STATUS_NOT_SUPPORTED;
++    BOOL removed;
++
++    TRACE("device_obj %p, irp %p, code %#lx.\n", device_obj, irp, code);
++
++    if (device_obj == bus_fdo || device_obj == bus_pdo)
++    {
++        irp->IoStatus.Status = STATUS_NOT_SUPPORTED;
++        IoCompleteRequest(irp, IO_NO_INCREMENT);
++        return STATUS_NOT_SUPPORTED;
++    }
++
++    EnterCriticalSection(&wineusb_cs);
++    removed = device->removed;
++    LeaveCriticalSection(&wineusb_cs);
++
++    if (removed)
++    {
++        irp->IoStatus.Status = STATUS_DELETE_PENDING;
++        IoCompleteRequest(irp, IO_NO_INCREMENT);
++        return STATUS_DELETE_PENDING;
++    }
++
++    if (code == IOCTL_WINEUSB_SUBMIT_URB)
++        status = usb_submit_user_urb(device, irp);
++    else
++        FIXME("Unhandled ioctl %#lx.\n", code);
++
++    if (status != STATUS_PENDING)
++    {
++        irp->IoStatus.Status = status;
++        IoCompleteRequest(irp, IO_NO_INCREMENT);
++    }
++    return status;
++}
++
+ static NTSTATUS WINAPI driver_internal_ioctl(DEVICE_OBJECT *device_obj, IRP *irp)
+ {
+     IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
+@@ -654,7 +880,8 @@
+     switch (code)
+     {
+         case IOCTL_INTERNAL_USB_SUBMIT_URB:
+-            status = usb_submit_urb(device, irp);
++            status = usb_submit_urb_urb(device, irp,
++                    IoGetCurrentIrpStackLocation(irp)->Parameters.Others.Argument1);
+             break;
+ 
+         default:
+@@ -710,6 +937,7 @@
+     driver->DriverExtension->AddDevice = driver_add_device;
+     driver->DriverUnload = driver_unload;
+     driver->MajorFunction[IRP_MJ_PNP] = driver_pnp;
++    driver->MajorFunction[IRP_MJ_DEVICE_CONTROL] = driver_ioctl;
+     driver->MajorFunction[IRP_MJ_INTERNAL_DEVICE_CONTROL] = driver_internal_ioctl;
+ 
+     return STATUS_SUCCESS;

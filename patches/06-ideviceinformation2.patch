@@ -1,0 +1,249 @@
+--- include/windows.devices.enumeration.idl.orig	2026-08-23 03:38:33.817899900 +0100
++++ include/windows.devices.enumeration.idl	2026-08-23 03:39:47.867106799 +0100
+@@ -302,6 +302,21 @@
+ 
+     [
+         contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.Devices.Enumeration.DeviceInformation),
++        uuid(f156a638-7997-48d9-a10c-269d46533f48)
++    ]
++    interface IDeviceInformation2 : IInspectable
++        requires
++            Windows.Devices.Enumeration.IDeviceInformation
++    {
++        [propget] HRESULT Kind([out, retval] Windows.Devices.Enumeration.DeviceInformationKind *value);
++        /* Returns DeviceInformationPairing, which Wine does not implement yet. IInspectable
++         * keeps the vtable layout identical. */
++        [propget] HRESULT Pairing([out, retval] IInspectable **value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
+         marshaling_behavior(agile),
+         static(Windows.Devices.Enumeration.IDeviceInformationStatics, Windows.Foundation.UniversalApiContract, 1.0),
+         static(Windows.Devices.Enumeration.IDeviceInformationStatics2, Windows.Foundation.UniversalApiContract, 1.0),
+@@ -310,7 +325,7 @@
+     runtimeclass DeviceInformation
+     {
+         [default] interface Windows.Devices.Enumeration.IDeviceInformation;
+-        /* [contract(Windows.Foundation.UniversalApiContract, 1.0)] interface Windows.Devices.Enumeration.IDeviceInformation2; */
++        [contract(Windows.Foundation.UniversalApiContract, 1.0)] interface Windows.Devices.Enumeration.IDeviceInformation2;
+     }
+ 
+     [
+--- dlls/windows.devices.enumeration/information.c.orig	2026-08-23 03:33:11.734071925 +0100
++++ dlls/windows.devices.enumeration/information.c	2026-08-23 03:39:20.280825352 +0100
+@@ -27,10 +27,12 @@
+ struct device_information
+ {
+     IDeviceInformation IDeviceInformation_iface;
++    IDeviceInformation2 IDeviceInformation2_iface;
+     LONG ref;
+ 
+     IMap_HSTRING_IInspectable *properties;
+     HSTRING id;
++    DeviceInformationKind kind;
+ };
+ 
+ static inline struct device_information *impl_from_IDeviceInformation( IDeviceInformation *iface )
+@@ -38,6 +40,11 @@
+     return CONTAINING_RECORD( iface, struct device_information, IDeviceInformation_iface );
+ }
+ 
++static inline struct device_information *impl_from_IDeviceInformation2( IDeviceInformation2 *iface )
++{
++    return CONTAINING_RECORD( iface, struct device_information, IDeviceInformation2_iface );
++}
++
+ static HRESULT WINAPI device_information_QueryInterface( IDeviceInformation *iface, REFIID iid, void **out )
+ {
+     TRACE( "iface %p, iid %s, out %p\n", iface, debugstr_guid( iid ), out );
+@@ -52,6 +59,14 @@
+         return S_OK;
+     }
+ 
++    if (IsEqualGUID( iid, &IID_IDeviceInformation2 ))
++    {
++        struct device_information *impl = impl_from_IDeviceInformation( iface );
++        IUnknown_AddRef( iface );
++        *out = &impl->IDeviceInformation2_iface;
++        return S_OK;
++    }
++
+     FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
+     *out = NULL;
+     return E_NOINTERFACE;
+@@ -108,16 +123,60 @@
+     return WindowsDuplicateString( impl->id, id );
+ }
+ 
++/* Look up a property by canonical name in the object's property map. */
++static HRESULT device_information_lookup_property( struct device_information *impl, const WCHAR *nameW,
++                                                   IPropertyValue **out )
++{
++    IInspectable *val;
++    HSTRING_HEADER hdr;
++    HSTRING name;
++    boolean exists;
++    HRESULT hr;
++
++    *out = NULL;
++    WindowsCreateStringReference( nameW, wcslen( nameW ), &hdr, &name );
++    if (FAILED(hr = IMap_HSTRING_IInspectable_HasKey( impl->properties, name, &exists ))) return hr;
++    if (!exists) return E_NOTIMPL;
++    if (FAILED(hr = IMap_HSTRING_IInspectable_Lookup( impl->properties, name, &val ))) return hr;
++    hr = IInspectable_QueryInterface( val, &IID_IPropertyValue, (void **)out );
++    IInspectable_Release( val );
++    return hr;
++}
++
+ static HRESULT WINAPI device_information_get_Name( IDeviceInformation *iface, HSTRING *name )
+ {
+-    FIXME( "iface %p, name %p stub!\n", iface, name );
+-    return E_NOTIMPL;
++    struct device_information *impl = impl_from_IDeviceInformation( iface );
++    IPropertyValue *propval;
++    HRESULT hr;
++
++    TRACE( "iface %p, name %p\n", iface, name );
++
++    if (!name) return E_POINTER;
++    if (SUCCEEDED(hr = device_information_lookup_property( impl, L"System.ItemNameDisplay", &propval )))
++    {
++        hr = IPropertyValue_GetString( propval, name );
++        IPropertyValue_Release( propval );
++        return hr;
++    }
++    /* Not all object types carry a display name; fall back to the id. */
++    return WindowsDuplicateString( impl->id, name );
+ }
+ 
+ static HRESULT WINAPI device_information_get_IsEnabled( IDeviceInformation *iface, boolean *value )
+ {
+-    FIXME( "iface %p, value %p stub!\n", iface, value );
+-    return E_NOTIMPL;
++    struct device_information *impl = impl_from_IDeviceInformation( iface );
++    IPropertyValue *propval;
++    HRESULT hr;
++
++    TRACE( "iface %p, value %p\n", iface, value );
++
++    if (!value) return E_POINTER;
++    *value = FALSE;
++    if (FAILED(hr = device_information_lookup_property( impl, L"System.Devices.InterfaceEnabled", &propval )))
++        return hr;
++    hr = IPropertyValue_GetBoolean( propval, value );
++    IPropertyValue_Release( propval );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI device_information_IsDefault( IDeviceInformation *iface, boolean *value )
+@@ -158,6 +217,75 @@
+     return E_NOTIMPL;
+ }
+ 
++static HRESULT WINAPI device_information2_QueryInterface( IDeviceInformation2 *iface, REFIID iid, void **out )
++{
++    struct device_information *impl = impl_from_IDeviceInformation2( iface );
++    return IDeviceInformation_QueryInterface( &impl->IDeviceInformation_iface, iid, out );
++}
++
++static ULONG WINAPI device_information2_AddRef( IDeviceInformation2 *iface )
++{
++    struct device_information *impl = impl_from_IDeviceInformation2( iface );
++    return IDeviceInformation_AddRef( &impl->IDeviceInformation_iface );
++}
++
++static ULONG WINAPI device_information2_Release( IDeviceInformation2 *iface )
++{
++    struct device_information *impl = impl_from_IDeviceInformation2( iface );
++    return IDeviceInformation_Release( &impl->IDeviceInformation_iface );
++}
++
++static HRESULT WINAPI device_information2_GetIids( IDeviceInformation2 *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI device_information2_GetRuntimeClassName( IDeviceInformation2 *iface, HSTRING *class_name )
++{
++    struct device_information *impl = impl_from_IDeviceInformation2( iface );
++    return IDeviceInformation_GetRuntimeClassName( &impl->IDeviceInformation_iface, class_name );
++}
++
++static HRESULT WINAPI device_information2_GetTrustLevel( IDeviceInformation2 *iface, TrustLevel *trust_level )
++{
++    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI device_information2_get_Kind( IDeviceInformation2 *iface, DeviceInformationKind *value )
++{
++    struct device_information *impl = impl_from_IDeviceInformation2( iface );
++
++    TRACE( "iface %p, value %p\n", iface, value );
++
++    if (!value) return E_POINTER;
++    *value = impl->kind;
++    return S_OK;
++}
++
++static HRESULT WINAPI device_information2_get_Pairing( IDeviceInformation2 *iface, IInspectable **value )
++{
++    FIXME( "iface %p, value %p stub!\n", iface, value );
++    if (value) *value = NULL;
++    return E_NOTIMPL;
++}
++
++static const struct IDeviceInformation2Vtbl device_information2_vtbl =
++{
++    /* IUnknown */
++    device_information2_QueryInterface,
++    device_information2_AddRef,
++    device_information2_Release,
++    /* IInspectable */
++    device_information2_GetIids,
++    device_information2_GetRuntimeClassName,
++    device_information2_GetTrustLevel,
++    /* IDeviceInformation2 */
++    device_information2_get_Kind,
++    device_information2_get_Pairing,
++};
++
+ static const struct IDeviceInformationVtbl device_information_vtbl =
+ {
+     /* IUnknown */
+@@ -326,6 +454,22 @@
+                              obj->pProperties );
+ }
+ 
++static DeviceInformationKind device_information_kind_from_object_type( DEV_OBJECT_TYPE type )
++{
++    switch (type)
++    {
++    case DevObjectTypeDeviceInterfaceDisplay: return DeviceInformationKind_DeviceInterface;
++    case DevObjectTypeDeviceContainerDisplay: return DeviceInformationKind_DeviceContainer;
++    case DevObjectTypeDevice:                 return DeviceInformationKind_Device;
++    case DevObjectTypeDeviceInterfaceClass:   return DeviceInformationKind_DeviceInterfaceClass;
++    case DevObjectTypeAEP:                    return DeviceInformationKind_AssociationEndpoint;
++    case DevObjectTypeAEPContainer:           return DeviceInformationKind_AssociationEndpointContainer;
++    case DevObjectTypeAEPService:             return DeviceInformationKind_AssociationEndpointService;
++    case DevObjectTypeDevicePanel:            return DeviceInformationKind_DevicePanel;
++    default:                                  return DeviceInformationKind_Unknown;
++    }
++}
++
+ HRESULT device_information_create( const DEV_OBJECT *obj, IDeviceInformation **info )
+ {
+     struct device_information *impl;
+@@ -335,7 +479,9 @@
+ 
+     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+     impl->IDeviceInformation_iface.lpVtbl = &device_information_vtbl;
++    impl->IDeviceInformation2_iface.lpVtbl = &device_information2_vtbl;
+     impl->ref = 1;
++    impl->kind = device_information_kind_from_object_type( obj->ObjectType );
+     if (FAILED(hr = create_device_properties( obj->pProperties, obj->cPropertyCount, &impl->properties )))
+     {
+         free( impl );

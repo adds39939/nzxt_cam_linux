@@ -159,7 +159,7 @@
 +@ stdcall WinUsb_SetPowerPolicy(ptr long long ptr)
 +@ stdcall WinUsb_WritePipe(ptr long ptr long ptr ptr)
 --- dlls/winusb/main.c.orig	2026-08-23 04:10:10.483339656 +0100
-+++ dlls/winusb/main.c	2026-08-23 04:56:03.433560775 +0100
++++ dlls/winusb/main.c	2026-08-23 07:33:40.305777642 +0100
 @@ -1,4 +1,6 @@
  /*
 + * WinUSB implementation on top of wineusb.sys.
@@ -167,7 +167,7 @@
   * Copyright (C) 2022 Mohamad Al-Jaf
   *
   * This library is free software; you can redistribute it and/or
-@@ -17,20 +19,528 @@
+@@ -17,20 +19,534 @@
   */
  
  #include <stdarg.h>
@@ -351,7 +351,8 @@
 +
 +BOOL WINAPI WinUsb_GetAssociatedInterface( WINUSB_INTERFACE_HANDLE handle, UCHAR index,
 +                                           PWINUSB_INTERFACE_HANDLE assoc )
-+{
+ {
+-    FIXME( "(%p) - stub\n", handle );
 +    struct winusb_handle *device = handle, *iface;
 +
 +    TRACE( "handle %p, index %u, assoc %p.\n", handle, index, assoc );
@@ -386,8 +387,8 @@
 +    iface->config_len = device->config_len;
 +
 +    *assoc = iface;
-+    return TRUE;
-+}
+     return TRUE;
+ }
 +
 +BOOL WINAPI WinUsb_QueryInterfaceSettings( WINUSB_INTERFACE_HANDLE handle, UCHAR alt,
 +                                           PUSB_INTERFACE_DESCRIPTOR desc )
@@ -486,6 +487,12 @@
 +        return FALSE;
 +    }
 +
++    /* wineusb.sys builds the setup packet as a vendor request (the URB has no way
++     * to express the type bits), so anything else would be sent mislabelled. */
++    if ((setup.RequestType & 0x60) != 0x40)
++        FIXME( "Only vendor requests are supported; bmRequestType %#x will be sent as vendor.\n",
++               setup.RequestType );
++
 +    req.type = WINEUSB_URB_CONTROL;
 +    req.request_type = setup.RequestType;
 +    req.request = setup.Request;
@@ -581,8 +588,7 @@
 +}
 +
 +static BOOL pipe_request( WINUSB_INTERFACE_HANDLE handle, UCHAR pipe_id, ULONG type )
- {
--    FIXME( "(%p) - stub\n", handle );
++{
 +    struct winusb_handle *device = handle;
 +    struct wineusb_urb_request req = {0};
 +    ULONG len = 0;
@@ -613,8 +619,8 @@
 +BOOL WINAPI WinUsb_FlushPipe( WINUSB_INTERFACE_HANDLE handle, UCHAR pipe_id )
 +{
 +    TRACE( "handle %p, pipe %#x.\n", handle, pipe_id );
-     return TRUE;
- }
++    return TRUE;
++}
 +
 +BOOL WINAPI WinUsb_GetCurrentAlternateSetting( WINUSB_INTERFACE_HANDLE handle, PUCHAR setting )
 +{

@@ -1,0 +1,74 @@
+--- include/windows.foundation.idl.orig
++++ include/windows.foundation.idl
+@@ -160,6 +160,7 @@
+         interface Windows.Foundation.IReference<INT16>;
+         interface Windows.Foundation.IReference<INT32>;
+         interface Windows.Foundation.IReference<INT64>;
++        interface Windows.Foundation.IReference<UINT16>;
+         interface Windows.Foundation.IReference<UINT32>;
+         interface Windows.Foundation.IReference<UINT64>;
+         interface Windows.Foundation.IReference<Windows.Foundation.DateTime>;
+--- dlls/wintypes/main.c.orig
++++ dlls/wintypes/main.c
+@@ -401,6 +401,7 @@
+     {
+         IReference_BYTE byte_iface;
+         IReference_INT16 int16_iface;
++        IReference_UINT16 uint16_iface;
+         IReference_INT32 int32_iface;
+         IReference_UINT32 uint32_iface;
+         IReference_INT64 int64_iface;
+@@ -489,6 +490,12 @@
+         *out = &impl->irefs.int16_iface;
+         return S_OK;
+     }
++    else if (IsEqualIID(riid, &IID_IReference_UINT16) && impl->type == PropertyType_UInt16)
++    {
++        IReference_UINT16_AddRef(&impl->irefs.uint16_iface);
++        *out = &impl->irefs.uint16_iface;
++        return S_OK;
++    }
+     else if (IsEqualIID(riid, &IID_IReference_INT32) && impl->type == PropertyType_Int32)
+     {
+         IReference_INT32_AddRef(&impl->irefs.int32_iface);
+@@ -1044,6 +1051,31 @@
+     iref_int16_get_Value,
+ };
+ 
++DEFINE_IINSPECTABLE_(iref_uint16, IReference_UINT16, struct property_value,
++                     impl_from_IReference_UINT16, irefs.uint16_iface, &impl->IPropertyValue_iface);
++
++static HRESULT STDMETHODCALLTYPE iref_uint16_get_Value(IReference_UINT16 *iface, UINT16 *value)
++{
++    struct property_value *impl = impl_from_IReference_UINT16(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    return property_value_GetUInt16(&impl->IPropertyValue_iface, value);
++}
++
++static const struct IReference_UINT16Vtbl iref_uint16_vtbl =
++{
++    iref_uint16_QueryInterface,
++    iref_uint16_AddRef,
++    iref_uint16_Release,
++    /* IInspectable methods */
++    iref_uint16_GetIids,
++    iref_uint16_GetRuntimeClassName,
++    iref_uint16_GetTrustLevel,
++    /* IReference<UINT16> methods */
++    iref_uint16_get_Value,
++};
++
+ DEFINE_IINSPECTABLE_(iref_int32, IReference_INT32, struct property_value,
+                      impl_from_IReference_INT32, irefs.int32_iface, &impl->IPropertyValue_iface);
+ 
+@@ -1426,7 +1458,7 @@
+         UINT16 value, IInspectable **property_value)
+ {
+     TRACE("iface %p, value %u, property_value %p.\n", iface, value, property_value);
+-    return create_primitive_property_value(PropertyType_UInt16);
++    create_primitive_property_value_iref(PropertyType_UInt16, irefs.uint16_iface.lpVtbl, iref_uint16_vtbl);
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE property_value_statics_CreateInt32(IPropertyValueStatics *iface,

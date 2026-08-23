@@ -208,3 +208,14 @@ replaced DLLs in the prefix's `system32`.
   (`[Core bug] CPU device should have CPU temperature channels`) because temps are
   unavailable; it no longer breaks the UI once fonts work.
 - `privateMode` is on by default — CAM won't phone home with telemetry.
+
+## Licensing
+
+This repository's scripts, patches and docs are MIT (see `LICENSE`).
+
+`prebuilt/*.dll` are compiled from patched Wine sources and are therefore
+**LGPL-2.1-or-later** derivative works of Wine — see `NOTICE` for the
+corresponding-source pointers and rebuild instructions.
+
+No NZXT code or assets are redistributed here; get CAM from NZXT. This project
+is unaffiliated with NZXT.

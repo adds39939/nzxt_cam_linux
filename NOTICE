@@ -1,0 +1,27 @@
+Third-party components
+======================
+
+prebuilt/propsys.dll
+prebuilt/windows.devices.enumeration.dll
+
+These are NOT original works of this repository. They are compiled from the
+Wine source tree with the patches in patches/ applied, and are therefore
+derivative works of Wine, licensed under the GNU Lesser General Public
+License version 2.1 or later (LGPL-2.1-or-later).
+
+  Upstream source : https://dl.winehq.org/wine/source/
+  Version         : see prebuilt/BUILT_AGAINST
+  Modifications   : patches/01-propsys-hid-properties.patch
+                    patches/02-devicewatcher-updated-removed.patch
+  Rebuild         : scripts/build-wine-dlls.sh
+
+The complete corresponding source is the upstream Wine tarball for the version
+named in prebuilt/BUILT_AGAINST, plus the patches in patches/. Together with
+scripts/build-wine-dlls.sh these reproduce the binaries exactly.
+
+A copy of the LGPL-2.1 is available at:
+  https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+
+This project ships no NZXT code or assets. NZXT CAM is proprietary software and
+must be downloaded from NZXT. "NZXT" and "CAM" are trademarks of their owner;
+this project is unaffiliated with and unendorsed by NZXT.

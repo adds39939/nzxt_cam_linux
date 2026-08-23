@@ -1,5 +1,6 @@
 --- /dev/null
 +++ include/wine/wineusb.h
+@@ -0,0 +1,53 @@
 +/*
 + * Private interface between wineusb.sys and winusb.dll.
 + *

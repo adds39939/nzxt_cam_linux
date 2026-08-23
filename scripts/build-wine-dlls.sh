@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Rebuild the two patched Wine DLLs from source.
-# Needed when your Wine version differs from the one in prebuilt/ (see BUILT_AGAINST).
-# Usage: scripts/build-wine-dlls.sh [wine-version]   e.g. scripts/build-wine-dlls.sh 11.16
+# Rebuild every patched Wine component from source.
+# Needed when your Wine version differs from prebuilt/BUILT_AGAINST.
+# Usage: scripts/build-wine-dlls.sh [wine-version]     e.g. scripts/build-wine-dlls.sh 11.16
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,45 +15,56 @@ command -v x86_64-w64-mingw32-gcc >/dev/null || {
   echo "  Debian: sudo apt install gcc-mingw-w64-x86-64" >&2
   exit 1; }
 
-echo "==> Building Wine $VER DLLs in $WORK"
+echo "==> Building Wine $VER in $WORK"
 cd "$WORK"
 curl -# -L -o "wine-$VER.tar.xz" "https://dl.winehq.org/wine/source/$SERIES/wine-$VER.tar.xz"
 tar xf "wine-$VER.tar.xz"
 cd "wine-$VER"
 
 echo "==> Applying patches"
-patch -p0 --forward < "$REPO/patches/01-propsys-hid-properties.patch"
-patch -p0 --forward < "$REPO/patches/02-devicewatcher-updated-removed.patch"
+for p in "$REPO"/patches/*.patch; do
+  echo "    $(basename "$p")"
+  patch -p0 --forward < "$p"
+done
+[ -f include/wine/wineusb.h ] || { echo "patch series did not create include/wine/wineusb.h" >&2; exit 1; }
 
 echo "==> configure (a few minutes)"
 ./configure --enable-win64 --disable-tests --without-x --without-freetype >/dev/null
 
-echo "==> make"
-make -j"$(nproc)" dlls/propsys/x86_64-windows/propsys.dll
-make -j"$(nproc)" dlls/windows.devices.enumeration/x86_64-windows/windows.devices.enumeration.dll
+# User-mode DLLs are re-linked WITHOUT -Wl,--wine-builtin: a builtin-marked DLL is
+# rejected under WINEDLLOVERRIDES=...=n and nothing loads. Drivers keep the marker,
+# because a "native" driver makes winehid fail with STATUS_DLL_INIT_FAILED.
+relink_native() {           # $1 = dll dir, $2 = output name
+  local dir="$1" out="$2"
+  make -j"$(nproc)" "dlls/$dir/x86_64-windows/$out" >/dev/null
+  local cmd
+  cmd=$(make -n "dlls/$dir/x86_64-windows/$out" --always-make 2>/dev/null \
+        | grep -m1 'winegcc -o' || true)
+  if [ -z "$cmd" ]; then echo "could not recover link command for $out" >&2; exit 1; fi
+  cmd=${cmd//-Wl,--wine-builtin /}
+  cmd=${cmd/-o dlls\/$dir\/x86_64-windows\/$out/-o $REPO/prebuilt/$out}
+  eval "$cmd"
+  x86_64-w64-mingw32-strip "$REPO/prebuilt/$out"
+  echo "    built $out (native)"
+}
 
-# Re-link WITHOUT -Wl,--wine-builtin so Wine will accept them as "native" DLLs.
-# A builtin-marked DLL is rejected under WINEDLLOVERRIDES=...=n and nothing loads.
-echo "==> Re-linking as native"
-tools/winegcc/winegcc -o "$REPO/prebuilt/propsys.dll" --wine-objdir . \
-  --cc-cmd=x86_64-w64-mingw32-gcc -b x86_64-w64-mingw32 -shared dlls/propsys/propsys.spec \
-  dlls/propsys/x86_64-windows/{propstore,propsys_main,propvar}.o \
-  dlls/propsys/x86_64-windows/propsys_classes_r.res \
-  dlls/ole32/x86_64-windows/libole32.a dlls/oleaut32/x86_64-windows/liboleaut32.a \
-  libs/uuid/x86_64-windows/libuuid.a libs/winecrt0/x86_64-windows/libwinecrt0.a \
-  libs/compiler-rt/x86_64-windows/libcompiler-rt.a dlls/ucrtbase/x86_64-windows/libucrtbase.a \
-  dlls/kernel32/x86_64-windows/libkernel32.a dlls/ntdll/x86_64-windows/libntdll.a -Wl,--build-id
+build_driver() {            # $1 = dir, $2 = output name (stays builtin)
+  make -j"$(nproc)" "dlls/$1/x86_64-windows/$2" >/dev/null
+  cp "dlls/$1/x86_64-windows/$2" "$REPO/prebuilt/$2"
+  x86_64-w64-mingw32-strip "$REPO/prebuilt/$2"
+  echo "    built $2 (builtin driver)"
+}
 
-D=dlls/windows.devices.enumeration
-tools/winegcc/winegcc -o "$REPO/prebuilt/windows.devices.enumeration.dll" --wine-objdir . \
-  --cc-cmd=x86_64-w64-mingw32-gcc -b x86_64-w64-mingw32 -shared $D/windows.devices.enumeration.spec \
-  $D/x86_64-windows/*.o $D/x86_64-windows/*.res \
-  dlls/cfgmgr32/x86_64-windows/libcfgmgr32.a dlls/combase/x86_64-windows/libcombase.a \
-  dlls/propsys/x86_64-windows/libpropsys.a \
-  libs/uuid/x86_64-windows/libuuid.a libs/winecrt0/x86_64-windows/libwinecrt0.a \
-  libs/compiler-rt/x86_64-windows/libcompiler-rt.a dlls/ucrtbase/x86_64-windows/libucrtbase.a \
-  dlls/kernel32/x86_64-windows/libkernel32.a dlls/ntdll/x86_64-windows/libntdll.a -Wl,--build-id
+echo "==> Building components"
+relink_native propsys                      propsys.dll
+relink_native windows.devices.enumeration  windows.devices.enumeration.dll
+relink_native cfgmgr32                     cfgmgr32.dll
+relink_native winusb                       winusb.dll
+build_driver  hidclass.sys                 hidclass.sys
+build_driver  wineusb.sys                  wineusb.sys
 
-x86_64-w64-mingw32-strip "$REPO/prebuilt/"*.dll
 echo "$VER" > "$REPO/prebuilt/BUILT_AGAINST"
-echo "==> Done. Re-run scripts/setup.sh to install them."
+echo
+echo "==> Done. Install with:"
+echo "      ./scripts/setup.sh                     # user-mode DLLs, per prefix"
+echo "      sudo ./scripts/install-wine-drivers.sh # kernel drivers, system-wide"

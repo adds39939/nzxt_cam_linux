@@ -21,8 +21,10 @@
 # CAM's own "start with Windows" switch cannot do any of this by itself. It writes to
 # the prefix's HKCU\...\CurrentVersion\Run key, which Wine only acts on when a Wine
 # session starts -- and nothing starts one when you log in to Linux, so the switch
-# never fires. "sync" gives it its meaning back: the launcher runs it at every start,
-# and whichever way the switch has been left is mirrored onto the Linux side.
+# never fires. "sync" gives it its meaning back: the launcher runs it as it starts and
+# again as it stops, and whichever way the switch has been left is mirrored onto the
+# Linux side. Both, so that flipping the switch and logging straight out still works --
+# the stop side reads the registry after the wineserver has flushed it.
 set -euo pipefail
 
 LAUNCHER="$HOME/.local/bin/nzxt-cam"

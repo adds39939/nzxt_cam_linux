@@ -99,7 +99,9 @@ fi
 
 # CAM's own "start with Windows" switch writes to the prefix's Run key, which Wine only
 # acts on when a Wine session starts -- and nothing starts one when you log in to
-# Linux. Make the switch mean something by mirroring it onto the Linux side.
+# Linux. Make the switch mean something by mirroring it onto the Linux side. Once here
+# and once on the way out, which between them cover a switch flipped while CAM was
+# running and one flipped in a session that has since ended.
 if [ -x "$HOME/.local/bin/nzxt-cam-autostart" ]; then
   "$HOME/.local/bin/nzxt-cam-autostart" sync >/dev/null 2>&1 || true
 fi
@@ -168,6 +170,16 @@ cleanup() {
     for _ in 1 2 3 4 5; do kill -0 "$cam" 2>/dev/null || break; sleep 1; done
   fi
   wineserver -k >/dev/null 2>&1 || true
+
+  # Once more on the way out, now that stopping the wineserver has flushed the
+  # registry: a "start with Windows" flipped during this session is on disk by this
+  # point, and picking it up here is what stops the change waiting for the next
+  # launch. Without it, turning the switch on and logging straight out means CAM does
+  # not start -- the mirror had not run yet. Bounded, because at logout this runs
+  # against a systemd manager that is itself shutting down.
+  if [ -x "$HOME/.local/bin/nzxt-cam-autostart" ]; then
+    timeout 10 "$HOME/.local/bin/nzxt-cam-autostart" sync >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT INT TERM
 

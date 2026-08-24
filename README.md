@@ -109,8 +109,9 @@ systemctl --user status nzxt-cam
 
 The switch inside CAM cannot fire on its own here — it writes to the prefix's `Run`
 key, and nothing starts a Wine session when you log in to Linux — so the launcher
-mirrors it onto the systemd unit each time it starts. Flip it in either place and the
-other follows.
+mirrors it onto the systemd unit, once as it starts and again as it stops. Flip it in
+either place and the other follows; flipping it and logging straight out works too,
+because the stop side reads the key after Wine has flushed it to disk.
 
 A user unit rather than an autostart entry: it is ordered after
 `graphical-session.target`, so it starts once the session's `DISPLAY` exists; logging

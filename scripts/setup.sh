@@ -10,6 +10,17 @@ INSTALLER="${1:-}"
 say() { printf '\n\033[1;35m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Let Wine finish what it is doing, but never wait indefinitely: "wineserver -w" waits
+# for every process in the prefix to exit, so anything holding a window open -- CAM
+# itself, most likely -- blocks the install for good. Give it a moment, then stop it.
+settle() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 30 wineserver -w 2>/dev/null || wineserver -k >/dev/null 2>&1 || true
+  else
+    wineserver -k >/dev/null 2>&1 || true
+  fi
+}
+
 for c in wine winetricks cabextract; do
   command -v "$c" >/dev/null || die "missing dependency: $c"
 done
@@ -24,7 +35,7 @@ esac
 
 say "Creating prefix (64-bit)"
 WINEARCH=win64 wineboot -i >/dev/null 2>&1 || true
-wineserver -w
+settle
 
 # --- THE critical fix: without real fonts Chromium renders zero-height text and
 # --- the renderer dies on a NOTREACHED. Everything else is secondary.
@@ -66,13 +77,36 @@ if [ "$DPI" -gt 96 ] 2>/dev/null; then
   say "Setting Wine DPI to $DPI (desktop scale $SCALE)"
   wine reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$DPI" /f >/dev/null 2>&1
 fi
-wineserver -w
+settle
 
 if [ -n "$INSTALLER" ]; then
   [ -f "$INSTALLER" ] || die "installer not found: $INSTALLER"
   say "Running the CAM installer (this takes a few minutes)"
-  wine "$INSTALLER" || true
-  wineserver -w
+  # CAM's installer launches the app as its last act, so "wineserver -w" -- wait for
+  # the prefix to go quiet -- never returns: it sits there until you close a window
+  # you did not ask for. Run the installer in the background instead and stop the
+  # prefix once CAM is on disk, whether the installer exited or is still holding it.
+  wine "$INSTALLER" >/dev/null 2>&1 &
+  installer=$!
+  camexe="$WINEPREFIX/drive_c/Program Files/NZXT CAM/NZXT CAM.exe"
+
+  waited=0
+  while [ "$waited" -lt 900 ]; do
+    if [ -f "$camexe" ]; then
+      # Installed. Done as soon as the installer lets go, or as soon as it has
+      # launched CAM itself -- either way there is nothing left to wait for.
+      kill -0 "$installer" 2>/dev/null || break
+      pgrep -f "NZXT CAM.exe" >/dev/null 2>&1 && break
+    elif ! kill -0 "$installer" 2>/dev/null; then
+      break                                  # exited without installing anything
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+
+  sleep 3                                    # let the last writes land
+  wineserver -k >/dev/null 2>&1 || true
+  wait "$installer" 2>/dev/null || true
 fi
 
 CAMDIR="$WINEPREFIX/drive_c/Program Files/NZXT CAM"

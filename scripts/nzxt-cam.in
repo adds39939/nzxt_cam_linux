@@ -2,6 +2,15 @@
 # Launch NZXT CAM in its patched Wine prefix.
 export WINEPREFIX="__PREFIX__"
 
+# Only one launcher at a time. Each one supervises CAM and refreshes the GPU
+# readings, so a second fights the first over restarts and over that file -- which
+# looks like readings that flicker or go stale for no reason.
+exec 9>"$WINEPREFIX/.nzxt-cam.lock" 2>/dev/null || true
+if command -v flock >/dev/null 2>&1 && ! flock -n 9 2>/dev/null; then
+  echo "nzxt-cam: already running" >&2
+  exit 0
+fi
+
 # Wine's PnP manager rebuilds the device tree (and rewrites DEVPKEY_Device_Parent)
 # every time the server starts, so these have to be re-applied after enumeration and
 # before CAM looks for its device -- including after the restart below, which stops
@@ -55,19 +64,14 @@ reset_fatal_route() {
   done
 }
 
-# NVIDIA exposes no hwmon node, so the shim cannot read the GPU itself. Refresh
-# the readings into a file it can: temperature C, load %, clock MHz, fan %, power W.
+# The shim cannot read the GPU from inside the prefix, so refresh the readings into a
+# file it can. The poller works out where to get them: the kernel's hwmon and DRM
+# interfaces for AMD, Intel and nouveau, nvidia-smi for NVIDIA's proprietary driver.
 GPU_STATE="$WINEPREFIX/drive_c/windows/temp/nzxt-cam-gpu"
-if command -v nvidia-smi >/dev/null 2>&1; then
+GPU_POLL="$HOME/.local/bin/nzxt-cam-gpu-poll"
+if [ -x "$GPU_POLL" ]; then
   mkdir -p "$(dirname "$GPU_STATE")"
-  (
-    while :; do
-      nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,clocks.gr,fan.speed,power.draw \
-                 --format=csv,noheader,nounits > "$GPU_STATE.tmp" 2>/dev/null \
-        && mv -f "$GPU_STATE.tmp" "$GPU_STATE"
-      sleep 2
-    done
-  ) &
+  "$GPU_POLL" "$GPU_STATE" 2 >/dev/null 2>&1 &
   trap 'kill $! 2>/dev/null' EXIT
 fi
 

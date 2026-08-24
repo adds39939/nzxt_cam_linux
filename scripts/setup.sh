@@ -137,5 +137,8 @@ say "Installing launcher -> ~/.local/bin/nzxt-cam"
 mkdir -p "$HOME/.local/bin"
 sed "s|__PREFIX__|$WINEPREFIX|" "$REPO/scripts/nzxt-cam.in" > "$HOME/.local/bin/nzxt-cam"
 chmod +x "$HOME/.local/bin/nzxt-cam"
+# The launcher runs this to keep GPU readings fresh, so it has to outlive the
+# temporary copy of the release that install.sh unpacked.
+install -m755 "$REPO/scripts/gpu-poll.sh" "$HOME/.local/bin/nzxt-cam-gpu-poll"
 
 say "Done. Run:  nzxt-cam"

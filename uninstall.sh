@@ -146,6 +146,7 @@ fi
 say "This will remove"
 [ "$PREFIX_OK" -eq 1 ] && echo "    $PREFIX   (CAM, its settings, profiles and logs)"
 [ -f "$LAUNCHER" ]     && echo "    $LAUNCHER"
+for f in "$LAUNCHER"-*; do [ -e "$f" ] && echo "    $f"; done
 [ "$RUNNING" -gt 0 ] 2>/dev/null && echo "    $RUNNING running launcher process(es) will be stopped"
 for f in "${DESKTOP_DIRS[@]:-}";  do [ -n "$f" ] && echo "    $f/   (whole directory)"; done
 for f in "${DESKTOP_ITEMS[@]:-}"; do [ -n "$f" ] && echo "    $f"; done
@@ -178,9 +179,13 @@ if [ "$PREFIX_OK" -eq 1 ]; then
     fi
 fi
 
-if [ -f "$LAUNCHER" ]; then
+if [ -f "$LAUNCHER" ] || compgen -G "$LAUNCHER"'*' >/dev/null 2>&1; then
     say "Removing the launcher"
-    rm -f "$LAUNCHER"
+    # The launcher and its helpers all share the nzxt-cam prefix, so take them by
+    # pattern rather than by a list that would go stale as helpers are added.
+    for f in "$LAUNCHER" "$LAUNCHER"-*; do
+        [ -e "$f" ] && rm -f "$f" && echo "    $f"
+    done
 fi
 
 if [ ${#DESKTOP_DIRS[@]} -gt 0 ] || [ ${#DESKTOP_ITEMS[@]} -gt 0 ]; then

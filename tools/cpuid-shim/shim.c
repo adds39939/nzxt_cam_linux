@@ -107,27 +107,75 @@ static float core_multiplier( unsigned core )
     return (float)khz / 100000.0f;
 }
 
-/* GPU readings, refreshed into a file by the launcher: nvidia-smi is a process,
- * and NVIDIA exposes no hwmon node, so it cannot be read from in here directly.
- * Order: temperature C, utilisation %, clock MHz, fan %, power W. */
-struct gpu_readings { float temperature, load, clock, fan, power; int valid; };
-/* fan is parsed but unused: nvidia-smi reports a percentage, CAM wants RPM. */
+/* GPU readings, refreshed into a file by the launcher. The kernel's hwmon and DRM
+ * interfaces cover AMD, Intel and nouveau with no dependency at all; only NVIDIA's
+ * proprietary driver registers no hwmon node, and there the launcher falls back to
+ * nvidia-smi. Either way this side just reads six fields:
+ *
+ *   temperature C, load %, clock MHz, fan, power W, fan unit
+ *
+ * A field is "-" when the driver does not expose it, which becomes -1 here: that is
+ * the SDK's own "no reading" value, so CAM shows n/a for it and nothing else changes.
+ */
+struct gpu_readings
+{
+    float temperature, load, clock, fan, power;
+    int fan_is_rpm;
+    int valid;
+};
+
+/* "-" (or anything unparseable) means the driver does not expose this one. */
+static float gpu_field( const char *token )
+{
+    char *end;
+    float value;
+
+    while (*token == ' ') token++;
+    if (*token == '-' && (token[1] == '\0' || token[1] == ' ' || token[1] == '\n'))
+        return -1.0f;
+    value = (float)strtod( token, &end );
+    return (end == token) ? -1.0f : value;
+}
 
 static void read_gpu( struct gpu_readings *out )
 {
     static struct gpu_readings cached;
     static DWORD last;
     DWORD now = GetTickCount();
+    char line[256], *field[6] = { 0 };
+    unsigned n = 0;
+    char *p;
     FILE *f;
 
     if (cached.valid && now - last < 1000) { *out = cached; return; }
     last = now;
-    cached.valid = 0;
+    memset( &cached, 0, sizeof(cached) );
+
     if ((f = fopen( "C:\\windows\\temp\\nzxt-cam-gpu", "r" )))
     {
-        if (fscanf( f, "%f, %f, %f, %f, %f", &cached.temperature, &cached.load,
-                    &cached.clock, &cached.fan, &cached.power ) == 5)
-            cached.valid = 1;
+        if (fgets( line, sizeof(line), f ))
+        {
+            for (p = line; *p && n < 6; )
+            {
+                field[n++] = p;
+                if (!(p = strchr( p, ',' ))) break;
+                *p++ = '\0';
+            }
+            if (n >= 5)
+            {
+                cached.temperature = gpu_field( field[0] );
+                cached.load        = gpu_field( field[1] );
+                cached.clock       = gpu_field( field[2] );
+                cached.fan         = gpu_field( field[3] );
+                cached.power       = gpu_field( field[4] );
+                /* CAM's fan field is RPM. A percentage is not that, so unless the
+                 * driver really reports RPM the fan stays unreported rather than
+                 * showing a number in the wrong unit. */
+                cached.fan_is_rpm  = (n >= 6 && field[5] && strstr( field[5], "rpm" ) != NULL);
+                if (!cached.fan_is_rpm) cached.fan = -1.0f;
+                cached.valid = 1;
+            }
+        }
         fclose( f );
     }
     *out = cached;
@@ -371,10 +419,8 @@ void on_ret(struct ctx *x)
             struct gpu_readings gpu;
 
             read_gpu( &gpu );
-            /* 0x3000 (fan) is left unanswered: CAM shows it as RPM and nvidia-smi
-             * only reports a percentage, so there is nothing honest to put there. */
             switch ((unsigned)x->c) {
-            case 0x2000: case 0x5000: case 0xe000: case 0xf000:
+            case 0x2000: case 0x3000: case 0x5000: case 0xe000: case 0xf000:
                 x->rax = gpu.valid ? 1 : 0;
                 break;
             }
@@ -392,6 +438,7 @@ void on_ret(struct ctx *x)
             read_gpu( &gpu );
             if (gpu.valid) switch ((unsigned)x->d) {
             case 0x2000: value = gpu.temperature; name = "GPU"; break;
+            case 0x3000: value = gpu.fan;         name = "GPU Fan"; break;
             case 0x5000: value = gpu.power;       name = "GPU Power"; break;
             case 0xe000: value = gpu.load;        name = "GPU Load"; break;
             case 0xf000: value = gpu.clock;       name = "GPU Clock"; break;

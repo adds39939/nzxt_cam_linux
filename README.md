@@ -52,8 +52,13 @@ detected until they are put back — re-run the installer after one.
 
 ### GPU readings
 
-GPU temperature, clock and load come from `nvidia-smi`, which ships with the NVIDIA
-driver:
+These come from the kernel's own `hwmon` and DRM interfaces, so **AMD, Intel and
+nouveau need nothing installed**. CPU readings likewise; `lm_sensors` is **not**
+required.
+
+NVIDIA's proprietary driver is the one exception — it registers no `hwmon` node and
+exposes nothing useful in sysfs — so on that one the readings come from `nvidia-smi`,
+which ships with the driver:
 
 ```bash
 sudo pacman -S nvidia-utils                  # Arch
@@ -62,8 +67,22 @@ sudo dnf install xorg-x11-drv-nvidia-cuda    # Fedora
 ```
 
 Without it the GPU is still detected and everything else keeps working — its readings
-just stay `n/a`. AMD and Intel GPUs are not wired up yet. CPU readings need nothing
-extra; `lm_sensors` is **not** required.
+just stay `n/a`.
+
+What each driver actually gives you:
+
+| | temp | load | clock | fan | power |
+|---|---|---|---|---|---|
+| AMD `amdgpu` | ✅ | ✅ | ✅ | ✅ RPM | ✅ |
+| Intel `i915`/`xe` | ✅ | — | ✅ | ✅ RPM | ✅ |
+| NVIDIA proprietary | ✅ | ✅ | ✅ | — | ✅ |
+| NVIDIA `nouveau` | ✅ | — | — | ✅ RPM | — |
+
+Intel load needs the perf PMU rather than sysfs, and NVIDIA only reports fan as a
+percentage where CAM's field is RPM, so those stay `n/a` rather than show a number
+that is not what it claims to be. **Only the NVIDIA path has been tested on
+hardware** — the others are built on the documented sysfs interfaces but nobody has
+run them.
 
 ### Start on login
 
@@ -128,9 +147,9 @@ Something not working? See [`docs/troubleshooting.md`](docs/troubleshooting.md).
 
 ## What doesn't
 
-* 🔧 **GPU fan speed** (CAM wants RPM, `nvidia-smi` only exposes a percentage),
-  **AMD and Intel GPUs**, and **motherboard fan speeds and temperatures** are not
-  implemented yet.
+* 🔧 **Motherboard fan speeds and temperatures** are not implemented. **GPU fan
+  speed** and **Intel GPU load** are reported where the driver exposes them — see
+  the table above for what each one gives.
 * 🚫 **Capture Card** needs a COM class Wine does not implement, and the page kills
   CAM's renderer. The launcher recovers from it automatically, so a click no longer
   leaves the app stuck — but making capture work is out of scope.

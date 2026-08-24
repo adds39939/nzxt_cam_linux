@@ -10,16 +10,34 @@ WINEPREFIX=~/pfx/nzxt_cam wineserver -k
 **GPU readings are `n/a`, or the cooler is missing, but only sometimes** — CAM was
 started without the launcher. Wine generates its own shortcut for CAM that runs it
 directly, and that one starts none of the GPU polling or device fix-ups. Point the
-shortcuts back at the launcher:
+menu entry back at the launcher, and clear away any desktop shortcut that came back
+with it:
 
 ```bash
 ~/.local/bin/nzxt-cam-desktop-entries ~/pfx/nzxt_cam
 ```
 
 The launcher also does this each time it starts, so running `nzxt-cam` once fixes them
-too. Note that CAM is not single-instance under Wine: launching it a second way while
-it is already running gives two copies fighting over the cooler, which is why the
-launcher refuses to start a second one and raises the existing window instead.
+too. Only one launcher runs at a time — each supervises CAM and refreshes the GPU
+readings, so a second would fight the first — and starting CAM again while it is up
+hands the arguments to the copy already running, which brings its window back, out of
+the tray if that is where it is.
+
+**Nothing happens when I start CAM, and nothing is logged** — if it is already running
+this is expected, and `nzxt-cam` now says so. Otherwise look in the launcher's log,
+which is where both a detached launch and the systemd unit write:
+
+```bash
+tail -f ~/pfx/nzxt_cam/nzxt-cam.log
+systemctl --user status nzxt-cam        # if it was started on login
+```
+
+Wine's output must not go to the journal, which is why the unit sends it to that file.
+Wine writes a `fixme` line for every stub it hits, hundreds in the first seconds, and
+journald's socket buffer fills faster than it drains; the write then blocks and CAM
+hangs part-way through starting, with one process, no window and nothing logged. If
+you write a unit of your own, give it `StandardOutput=append:` a file, not the
+default.
 
 **No text anywhere in the window** — the fonts did not land. Check for them:
 

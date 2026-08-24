@@ -1,19 +1,38 @@
-# NZXT CAM on Linux (Wine)
+<div align="center">
 
-**NZXT CAM 4.76.5** running under Wine, detecting and driving an NZXT cooler,
-including its LCD.
+<img src="docs/nzxt-cam.png" alt="" width="104" height="104">
 
-Out of the box CAM never leaves its loading screen. This repo applies the patches
-needed to get most of it working.
+<h1>NZXT CAM on Linux</h1>
+
+**NZXT CAM via Wine** — the official app, running on Linux, driving your NZXT hardware directly.
+
+[![Release](https://img.shields.io/github/v/release/adds39939/nzxt_cam_linux?style=flat-square&color=51007A&labelColor=1c1c1e)](https://github.com/adds39939/nzxt_cam_linux/releases/latest)
+[![CAM](https://img.shields.io/badge/CAM-4.76.5-51007A?style=flat-square&labelColor=1c1c1e)](https://nzxt.com/camsoftware)
+[![Wine](https://img.shields.io/badge/wine-11.16-51007A?style=flat-square&labelColor=1c1c1e)](WINE_VERSION)
+[![Platform](https://img.shields.io/badge/Linux-51007A?style=flat-square&labelColor=1c1c1e&label=runs%20on)](#install)
+[![License](https://img.shields.io/badge/license-MIT%20%2B%20LGPL--2.1-6b7280?style=flat-square&labelColor=1c1c1e)](#licensing)
+
+[**Install**](#install) · [GPU readings](#gpu-readings) · [Start on login](#start-on-login) · [What works](#what-works) · [Build it yourself](#building-it-yourself) · [Troubleshooting](docs/troubleshooting.md)
+
+</div>
+
+<br>
+
+Out of the box CAM never leaves its loading screen under Wine. This repository carries
+the patches that get it past that, and the sensor plumbing that makes its readings
+real — nothing inside a Wine prefix can see your hardware on its own.
 
 ![CAM running under Wine](docs/dashboard.png)
 
-CPU and GPU telemetry are read from Linux itself, so both report correctly and either
-can drive the pump and fan curves or appear on the LCD:
+<sub>**The dashboard** — CPU and GPU telemetry taken from Linux's own `hwmon` and DRM
+interfaces and handed to CAM through a shimmed CPUID SDK, because the ring-0 driver it
+normally reads them with cannot work under Wine.</sub>
 
 | Cooling | Lighting |
-|---|---|
+| --- | --- |
 | ![Cooling](docs/cooling.png) | ![Lighting](docs/lighting.png) |
+
+<sub>Either sensor can drive the pump and fan curves, or appear on the cooler's LCD.</sub>
 
 Verified on Arch Linux, `wine-11.16`, KDE/Wayland, with an NZXT Kraken Elite V2
 (`1e71:3012`).
@@ -44,13 +63,20 @@ when you log in.
 Start it with:
 
 ```bash
-nzxt-cam        # supervised, in this terminal
-nzxt-cam -d     # the same, detached -- the terminal comes straight back
+nzxt-cam        # supervised, attached to the current terminal
+nzxt-cam -d     # detached
 ```
 
-The menu and desktop shortcuts run that same launcher. Starting CAM any other way
-skips the GPU poller and the device fix-ups it applies, which shows up as GPU readings
-stuck at `n/a` and, after a Wine restart, no cooler.
+The application-menu entry runs that same launcher. Starting CAM any other way skips
+the GPU poller and the device fix-ups it applies, which shows up as GPU readings stuck
+at `n/a` and, after a Wine restart, no cooler.
+
+Nothing is put on your desktop. CAM's installer asks Wine for a desktop shortcut and
+Wine duly makes one; the install deletes it, along with the `.lnk` it was generated
+from so that it does not come back.
+
+Starting CAM while it is already running raises the window it is showing — including
+out of the tray — rather than giving you a second copy of it.
 
 A `wine` package upgrade overwrites those two drivers, and the cooler stops being
 detected until they are put back — re-run the installer after one.
@@ -91,15 +117,30 @@ run them.
 
 ### Start on login
 
-The installer offers this. To add it later, re-run the installer; to turn it off,
-delete the entry:
+CAM's own *start with Windows* switch controls this, and the installer offers it too.
+Either way you end up with a systemd user unit:
 
 ```bash
-rm ~/.config/autostart/nzxt-cam.desktop
+nzxt-cam-autostart status     # on or off, and which mechanism
+nzxt-cam-autostart add        # or remove
+systemctl --user status nzxt-cam
 ```
 
-CAM's own *start with Windows* setting does not work under Wine. Its **Start
-minimized** setting pairs well with this if you would rather it sat in the tray.
+The switch inside CAM cannot fire on its own here — it writes to the prefix's `Run`
+key, and nothing starts a Wine session when you log in to Linux — so the launcher
+mirrors it onto the systemd unit, once as it starts and again as it stops. Flip it in
+either place and the other follows; flipping it and logging straight out works too,
+because the stop side reads the key after Wine has flushed it to disk.
+
+A user unit rather than an autostart entry: it is ordered after
+`graphical-session.target`, so it starts once the session's `DISPLAY` exists; logging
+out stops CAM rather than leaving it behind driving the cooler; it restarts CAM if it
+dies; and `systemctl --user status nzxt-cam` says what happened when it does not
+start. Sessions that do not drive `graphical-session.target` — plain window managers,
+mostly — get an autostart entry at `~/.config/autostart/nzxt-cam.desktop` instead.
+
+CAM's **Start minimized** setting pairs well with this if you would rather it went
+straight to the tray.
 
 ### Display scaling
 
@@ -117,16 +158,8 @@ curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/uninstal
 ```
 
 That removes the Wine prefix — CAM, its settings, profiles and logs all live inside it
-— along with the launcher, the autostart entry, and the menu entries and icons Wine
-created. It then offers to put Wine's stock drivers back, which needs `sudo`.
-
-It finds the prefix by reading it back out of the launcher, shows you what it is about
-to delete and asks first.
-
-```bash
-ASSUME_YES=1 bash uninstall.sh      # unattended
-KEEP_DRIVERS=1 bash uninstall.sh    # leave the patched Wine drivers in place
-```
+— along with the launcher, the start-on-login unit, and the menu entries and icons
+Wine created. It then offers to put Wine's stock drivers back, which needs `sudo`.
 
 Something not working? See [`docs/troubleshooting.md`](docs/troubleshooting.md).
 
@@ -214,5 +247,7 @@ are therefore **LGPL-2.1-or-later** derivative works of Wine — see `NOTICE` fo
 corresponding-source pointers and rebuild instructions. They are built by CI from the
 patches in this repository, and are not committed here.
 
-No NZXT code or assets are redistributed here; get CAM from NZXT. This project is
-unaffiliated with NZXT.
+No NZXT code is redistributed here — get CAM from NZXT. The CAM icon at the top of
+this page and the screenshots below it are NZXT's artwork, reproduced only to identify
+the software this project patches. "NZXT" and "CAM" are NZXT's trademarks; this project
+is unaffiliated with NZXT and not endorsed by it.

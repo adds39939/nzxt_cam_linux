@@ -449,3 +449,49 @@ The launcher rewrites that route back to the dashboard before starting CAM, so t
 app can always be recovered by relaunching it. The page itself is still fatal;
 nothing here makes capture work.
 
+
+## The USB device tree
+
+Not a patch, but the same kind of gap. CAM correlates a HID interface with its
+WinUSB sibling by walking up to the USB hub and port. On Windows the composite
+device is the parent of its interfaces:
+
+```
+USB\VID_1E71&PID_3012\512&258&3&4          composite, Address = hub port
+  ├── …&MI_00\512&258&3&4                   vendor interface (WinUSB)
+  └── …&MI_01\258&1F6494820E40092C&0&0&0    HID interface
+        └── HID\VID_1E71&PID_3012&MI_01\…
+```
+
+Wine's tree is **flat**. `wineusb` (libusb) and `winebus` (udev) enumerate the same
+physical device independently and parent every node straight to their own synthetic
+root, so walking up from a HID interface reaches `ROOT\WINE\WINEBUS` and stops --
+never finding a USB device node or a port number.
+
+`tools/usbtree-fixup.c` does what `usbccgp` does on Windows: it re-points every USB
+interface node's `DEVPKEY_Device_Parent` at the matching composite, publishes the
+composite's children, and fills in `DEVPKEY_Device_Address` from the port number Wine
+already encodes in the composite's instance ID (`usbver&revision&busnum&portnum`, so
+`512&258&3&4` means bus 3, port 4).
+
+It is not a driver change because the two buses cannot name each other's devnodes:
+`winebus`'s `device_desc` has no bus/port/bcdDevice fields, so it cannot construct
+`wineusb`'s composite instance ID without an ABI change across its unixlib. Doing the
+join once in userspace, from data both sides already publish, is smaller and does not
+fork the driver interface.
+
+Wine's PnP manager rewrites `DEVPKEY_Device_Parent` every time the server starts, so
+the fixup has to run **after** enumeration and **before** CAM -- which is what the
+`nzxt-cam` launcher does. Run it by hand with `-v` to see what it changes:
+
+```bash
+wine ~/.../system32/usbtree-fixup.exe -v
+```
+
+## Kernel drivers are installed system-wide
+
+`hidclass.sys` and `wineusb.sys` are drivers. Wine loads builtin drivers from its
+install directory, not the prefix, and a driver **cannot** be overridden per-prefix --
+marking one `native` makes `winehid` fail with `STATUS_DLL_INIT_FAILED` and breaks all
+HID. That is why `scripts/install-wine-drivers.sh` needs `sudo`, and why it has to be
+re-run after any `wine` package upgrade.

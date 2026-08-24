@@ -4,8 +4,7 @@
 
 <h1>NZXT CAM on Linux</h1>
 
-**NZXT's own CAM, running under Wine** — detect and drive the cooler, its pump and<br>
-fan curves, its RGB and its LCD, with every sensor reading taken from Linux itself.
+**NZXT CAM via Wine** — the official app, running on Linux, driving your NZXT hardware directly.
 
 [![Release](https://img.shields.io/github/v/release/adds39939/nzxt_cam_linux?style=flat-square&color=51007A&labelColor=1c1c1e)](https://github.com/adds39939/nzxt_cam_linux/releases/latest)
 [![CAM](https://img.shields.io/badge/CAM-4.76.5-51007A?style=flat-square&labelColor=1c1c1e)](https://nzxt.com/camsoftware)
@@ -64,8 +63,8 @@ when you log in.
 Start it with:
 
 ```bash
-nzxt-cam        # supervised, in this terminal
-nzxt-cam -d     # the same, detached -- the terminal comes straight back
+nzxt-cam        # supervised, attached to the current terminal
+nzxt-cam -d     # detached
 ```
 
 The application-menu entry runs that same launcher. Starting CAM any other way skips
@@ -161,14 +160,6 @@ curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/uninstal
 That removes the Wine prefix — CAM, its settings, profiles and logs all live inside it
 — along with the launcher, the start-on-login unit, and the menu entries and icons
 Wine created. It then offers to put Wine's stock drivers back, which needs `sudo`.
-
-It finds the prefix by reading it back out of the launcher, shows you what it is about
-to delete and asks first.
-
-```bash
-ASSUME_YES=1 bash uninstall.sh      # unattended
-KEEP_DRIVERS=1 bash uninstall.sh    # leave the patched Wine drivers in place
-```
 
 Something not working? See [`docs/troubleshooting.md`](docs/troubleshooting.md).
 

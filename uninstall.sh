@@ -88,6 +88,7 @@ XDG_DIRS=(
     "$HOME/.local/share/applications"
     "$HOME/.config/menus"
     "$HOME/.local/share/desktop-directories"
+    "$HOME/.config/autostart"
     "$HOME/Desktop"
 )
 
@@ -100,10 +101,11 @@ for d in "${XDG_DIRS[@]}"; do
     # Directories belonging to CAM go wholesale, with whatever is inside them.
     while IFS= read -r -d '' sub; do DESKTOP_DIRS+=("$sub"); done < <(
         find "$d" -type d -iname "*NZXT*" -print0 2>/dev/null)
-    # Files that name this prefix, whatever they happen to be called.
+    # Files that name this prefix or the launcher, whatever they are called. The
+    # autostart entry names the launcher rather than the prefix, for instance.
     while IFS= read -r -d '' f; do
         seen_item "$f" || DESKTOP_ITEMS+=("$f")
-    done < <(grep -rlZ -F "$PREFIX" "$d" 2>/dev/null)
+    done < <(grep -rlZ -F -e "$PREFIX" -e "$LAUNCHER" "$d" 2>/dev/null)
     # ...and files named for CAM, which is how icons are identifiable at all.
     while IFS= read -r -d '' f; do
         seen_item "$f" || DESKTOP_ITEMS+=("$f")

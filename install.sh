@@ -152,6 +152,21 @@ else
     fi
 fi
 
+# ---------------------------------------------------------------- start on login
+
+say "Start on login"
+echo "    CAM's own \"start with Windows\" setting cannot work here: it writes to the"
+echo "    prefix's Run key, and nothing starts a Wine session when you log in to Linux,"
+echo "    so that switch never fires. A desktop autostart entry does the job instead."
+if confirm "    Start NZXT CAM automatically on login?"; then
+    bash "$REPO/scripts/autostart.sh" add || warn "could not add the autostart entry"
+else
+    echo
+    echo "    Skipped. Add it later with:"
+    echo "      curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/install.sh | bash"
+    echo "    or, from a clone:  ./scripts/autostart.sh add"
+fi
+
 say "Done"
 echo "    Launch with:  nzxt-cam"
 echo

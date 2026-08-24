@@ -71,6 +71,30 @@ sudo dnf install xorg-x11-drv-nvidia-cuda    # Fedora
 Without `nvidia-smi` the GPU is still detected and everything else keeps working --
 its readings just stay `n/a`. AMD and Intel GPUs are not wired up yet.
 
+### Start on login
+
+The installer offers this; answer `y` and CAM starts with your desktop session.
+
+CAM's own *start with Windows* setting cannot do it. That writes to the prefix's
+`HKCU\...\CurrentVersion\Run` key, which Wine only acts on when a Wine session
+starts -- and nothing starts one when you log in to Linux, so the switch never fires.
+
+What goes in instead is an ordinary desktop autostart entry at
+`~/.config/autostart/nzxt-cam.desktop`, running the same `nzxt-cam` launcher. A
+desktop entry rather than a systemd user unit because CAM is a GUI application: the
+entry runs inside the session, where `DISPLAY`/`WAYLAND_DISPLAY` already exist, while
+a user unit can start before the session is up and needs that environment imported.
+
+Turn it on or off at any time:
+
+```bash
+./scripts/autostart.sh add
+./scripts/autostart.sh remove
+```
+
+The uninstaller removes it along with everything else. CAM's own **Start minimized**
+setting pairs well with this if you would rather it sat in the tray.
+
 ### From a clone
 
 A clone has no `prebuilt/`, so either let `install.sh` pull the release as usual:

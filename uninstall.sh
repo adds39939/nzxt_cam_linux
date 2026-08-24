@@ -124,6 +124,16 @@ if [ ${#DESKTOP_DIRS[@]} -gt 0 ] || [ ${#DESKTOP_ITEMS[@]} -gt 0 ]; then
     echo "    found $(( ${#DESKTOP_DIRS[@]} + ${#DESKTOP_ITEMS[@]} )) menu entr(ies)/icon(s)"
 fi
 
+# The start-on-login unit. It is enabled against graphical-session.target, so it has
+# to be disabled before the file goes, otherwise a dangling symlink is left in
+# graphical-session.target.wants and systemd complains about it at every login.
+UNIT="$HOME/.config/systemd/user/nzxt-cam.service"
+UNIT_FOUND=0
+if [ -f "$UNIT" ]; then
+    UNIT_FOUND=1; FOUND=1
+    echo "    found start-on-login unit: $UNIT"
+fi
+
 # Patched drivers, detected by the backups the installer left next to them.
 DRIVER_BACKUPS=()
 for b in /usr/lib/wine/x86_64-windows/hidclass.sys.stock-backup \
@@ -147,6 +157,7 @@ say "This will remove"
 [ "$PREFIX_OK" -eq 1 ] && echo "    $PREFIX   (CAM, its settings, profiles and logs)"
 [ -f "$LAUNCHER" ]     && echo "    $LAUNCHER"
 for f in "$LAUNCHER"-*; do [ -e "$f" ] && echo "    $f"; done
+[ "$UNIT_FOUND" -eq 1 ] && echo "    $UNIT   (start on login)"
 [ "$RUNNING" -gt 0 ] 2>/dev/null && echo "    $RUNNING running launcher process(es) will be stopped"
 for f in "${DESKTOP_DIRS[@]:-}";  do [ -n "$f" ] && echo "    $f/   (whole directory)"; done
 for f in "${DESKTOP_ITEMS[@]:-}"; do [ -n "$f" ] && echo "    $f"; done
@@ -157,6 +168,17 @@ echo
 confirm "    Go ahead?" || die "aborted, nothing was removed"
 
 # ------------------------------------------------------------------------ remove
+
+# First, so that Restart=on-failure cannot put the launcher back while the prefix is
+# being deleted out from under it.
+if [ "$UNIT_FOUND" -eq 1 ]; then
+    say "Removing the start-on-login unit"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user disable --now nzxt-cam.service >/dev/null 2>&1 || true
+    fi
+    rm -f "$UNIT" && echo "    $UNIT"
+    command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload >/dev/null 2>&1 || true
+fi
 
 if [ "$RUNNING" -gt 0 ] 2>/dev/null; then
     say "Stopping the launcher"

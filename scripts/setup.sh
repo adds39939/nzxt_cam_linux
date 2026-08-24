@@ -141,10 +141,13 @@ chmod +x "$HOME/.local/bin/nzxt-cam"
 # temporary copy of the release that install.sh unpacked.
 install -m755 "$REPO/scripts/gpu-poll.sh" "$HOME/.local/bin/nzxt-cam-gpu-poll"
 install -m755 "$REPO/scripts/desktop-entries.sh" "$HOME/.local/bin/nzxt-cam-desktop-entries"
+install -m755 "$REPO/scripts/autostart.sh" "$HOME/.local/bin/nzxt-cam-autostart"
 
 # Wine's own shortcut for CAM runs it without the launcher, and so without the GPU
-# poller, the device fixups or the crash guard. Point the shortcuts here instead.
-say "Pointing menu and desktop shortcuts at the launcher"
+# poller, the device fixups or the crash guard. Point the menu entry here instead --
+# and take away the desktop shortcut CAM's installer asked for, which nobody using a
+# tray application needs and which this install did not offer to create.
+say "Fixing up the shortcuts CAM's installer left"
 "$HOME/.local/bin/nzxt-cam-desktop-entries" "$WINEPREFIX" "$HOME/.local/bin/nzxt-cam" || true
 
 say "Done. Run:  nzxt-cam"

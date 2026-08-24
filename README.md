@@ -48,9 +48,16 @@ nzxt-cam        # supervised, in this terminal
 nzxt-cam -d     # the same, detached -- the terminal comes straight back
 ```
 
-The menu and desktop shortcuts run that same launcher. Starting CAM any other way
-skips the GPU poller and the device fix-ups it applies, which shows up as GPU readings
-stuck at `n/a` and, after a Wine restart, no cooler.
+The application-menu entry runs that same launcher. Starting CAM any other way skips
+the GPU poller and the device fix-ups it applies, which shows up as GPU readings stuck
+at `n/a` and, after a Wine restart, no cooler.
+
+Nothing is put on your desktop. CAM's installer asks Wine for a desktop shortcut and
+Wine duly makes one; the install deletes it, along with the `.lnk` it was generated
+from so that it does not come back.
+
+Starting CAM while it is already running raises the window it is showing — including
+out of the tray — rather than giving you a second copy of it.
 
 A `wine` package upgrade overwrites those two drivers, and the cooler stops being
 detected until they are put back — re-run the installer after one.
@@ -91,15 +98,29 @@ run them.
 
 ### Start on login
 
-The installer offers this. To add it later, re-run the installer; to turn it off,
-delete the entry:
+CAM's own *start with Windows* switch controls this, and the installer offers it too.
+Either way you end up with a systemd user unit:
 
 ```bash
-rm ~/.config/autostart/nzxt-cam.desktop
+nzxt-cam-autostart status     # on or off, and which mechanism
+nzxt-cam-autostart add        # or remove
+systemctl --user status nzxt-cam
 ```
 
-CAM's own *start with Windows* setting does not work under Wine. Its **Start
-minimized** setting pairs well with this if you would rather it sat in the tray.
+The switch inside CAM cannot fire on its own here — it writes to the prefix's `Run`
+key, and nothing starts a Wine session when you log in to Linux — so the launcher
+mirrors it onto the systemd unit each time it starts. Flip it in either place and the
+other follows.
+
+A user unit rather than an autostart entry: it is ordered after
+`graphical-session.target`, so it starts once the session's `DISPLAY` exists; logging
+out stops CAM rather than leaving it behind driving the cooler; it restarts CAM if it
+dies; and `systemctl --user status nzxt-cam` says what happened when it does not
+start. Sessions that do not drive `graphical-session.target` — plain window managers,
+mostly — get an autostart entry at `~/.config/autostart/nzxt-cam.desktop` instead.
+
+CAM's **Start minimized** setting pairs well with this if you would rather it went
+straight to the tray.
 
 ### Display scaling
 
@@ -117,8 +138,8 @@ curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/uninstal
 ```
 
 That removes the Wine prefix — CAM, its settings, profiles and logs all live inside it
-— along with the launcher, the autostart entry, and the menu entries and icons Wine
-created. It then offers to put Wine's stock drivers back, which needs `sudo`.
+— along with the launcher, the start-on-login unit, and the menu entries and icons
+Wine created. It then offers to put Wine's stock drivers back, which needs `sudo`.
 
 It finds the prefix by reading it back out of the launcher, shows you what it is about
 to delete and asks first.

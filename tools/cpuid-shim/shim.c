@@ -251,119 +251,6 @@ static void accept_unlinked_gpu_entries(void)
     }
 }
 
-/* ---- D3DKMT ---------------------------------------------------------------
- *
- * cam_helper resolves these by name, so replacing what GetProcAddress hands back
- * is enough. Wine implements only two KMTQAITYPE_* queries; CAM wants
- * KMTQAITYPE_ADAPTERADDRESS (6), the adapter's PCI bus/device/function. */
-struct query_adapter_info { unsigned adapter, type; void *data; unsigned size; };
-struct adapter_address { unsigned bus, device, function; };
-
-static long (WINAPI *real_query_adapter_info)( struct query_adapter_info * );
-static FARPROC (WINAPI *real_get_proc_address)( HMODULE, const char * );
-
-static long WINAPI query_adapter_info_hook( struct query_adapter_info *desc )
-{
-    long status = real_query_adapter_info( desc );
-
-    if (status && desc && desc->type == 6 && desc->data &&
-        desc->size >= sizeof(struct adapter_address))
-    {
-        struct adapter_address *addr = desc->data;
-        DWORD bus = 0, device = 0, function = 0;
-        HKEY key = 0;
-        DWORD size = sizeof(DWORD);
-
-        /* gpu-pci-fixup has already put the host's PCI address on the device node. */
-        if (!RegOpenKeyExA( HKEY_LOCAL_MACHINE,
-                            "System\\CurrentControlSet\\Enum\\PCI", 0,
-                            KEY_ENUMERATE_SUB_KEYS, &key ))
-        {
-            char id[256];
-            DWORD len = sizeof(id);
-
-            if (!RegEnumKeyExA( key, 0, id, &len, NULL, NULL, NULL, NULL ))
-            {
-                char path[512];
-                HKEY dev;
-
-                snprintf( path, sizeof(path), "System\\CurrentControlSet\\Enum\\PCI\\%s\\00000000", id );
-                if (!RegOpenKeyExA( HKEY_LOCAL_MACHINE, path, 0, KEY_QUERY_VALUE, &dev ))
-                {
-                    DWORD value = 0;
-                    size = sizeof(value);
-                    if (!RegQueryValueExA( dev, "BusNumber", NULL, NULL, (BYTE *)&value, &size ))
-                        bus = value;
-                    size = sizeof(value);
-                    if (!RegQueryValueExA( dev, "Address", NULL, NULL, (BYTE *)&value, &size ))
-                    {
-                        device = value >> 16;
-                        function = value & 0xffff;
-                    }
-                    RegCloseKey( dev );
-                }
-            }
-            RegCloseKey( key );
-        }
-        addr->bus = bus;
-        addr->device = device;
-        addr->function = function;
-        status = 0;
-    }
-    return status;
-}
-
-static FARPROC WINAPI get_proc_address_hook( HMODULE module, const char *name )
-{
-    FARPROC ret = real_get_proc_address( module, name );
-
-    if (ret && (ULONG_PTR)name > 0xffff && !strcmp( name, "D3DKMTQueryAdapterInfo" ))
-    {
-        real_query_adapter_info = (void *)ret;
-        ret = (FARPROC)query_adapter_info_hook;
-    }
-    return ret;
-}
-
-static void patch_import( const char *dll_name, const char *func_name, void *replacement,
-                          void **original )
-{
-    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)GetModuleHandleA( NULL );
-    IMAGE_NT_HEADERS *nt;
-    IMAGE_IMPORT_DESCRIPTOR *desc;
-    ULONG_PTR mod = (ULONG_PTR)dos;
-    DWORD rva;
-
-    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return;
-    nt = (IMAGE_NT_HEADERS *)(mod + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return;
-    rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-    if (!rva) return;
-
-    for (desc = (IMAGE_IMPORT_DESCRIPTOR *)(mod + rva); desc->Name; desc++)
-    {
-        IMAGE_THUNK_DATA *names, *addrs;
-
-        if (_stricmp( (const char *)(mod + desc->Name), dll_name )) continue;
-        names = (IMAGE_THUNK_DATA *)(mod + desc->OriginalFirstThunk);
-        addrs = (IMAGE_THUNK_DATA *)(mod + desc->FirstThunk);
-        for (; names->u1.AddressOfData; names++, addrs++)
-        {
-            IMAGE_IMPORT_BY_NAME *by_name;
-            DWORD old;
-
-            if (IMAGE_SNAP_BY_ORDINAL( names->u1.Ordinal )) continue;
-            by_name = (IMAGE_IMPORT_BY_NAME *)(mod + names->u1.AddressOfData);
-            if (strcmp( (const char *)by_name->Name, func_name )) continue;
-            if (!VirtualProtect( addrs, sizeof(*addrs), PAGE_READWRITE, &old )) return;
-            *original = (void *)addrs->u1.Function;
-            addrs->u1.Function = (ULONG_PTR)replacement;
-            VirtualProtect( addrs, sizeof(*addrs), old, &old );
-            return;
-        }
-    }
-}
-
 static int readable( const void *p, SIZE_T n )
 {
     MEMORY_BASIC_INFORMATION mbi;
@@ -502,8 +389,6 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, void *rsv)
         base = (ULONG_PTR)realmod;
         if (realmod) real_qi = (qi_t)GetProcAddress(realmod, "QueryInterface");
         accept_unlinked_gpu_entries();
-        patch_import( "kernel32.dll", "GetProcAddress",
-                      get_proc_address_hook, (void **)&real_get_proc_address );
         L("shim up: real=%p qi=%p", (void *)realmod, (void *)real_qi);
     }
     return TRUE;

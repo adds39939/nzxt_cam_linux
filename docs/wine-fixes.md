@@ -431,8 +431,11 @@ branch would have risked. It is found by signature and applied only on a single
 unambiguous match, so a CAM update that moves the code disables the change instead
 of corrupting something else.
 
-The shim also serves `KMTQAITYPE_ADAPTERADDRESS`, which Wine's
-`D3DKMTQueryAdapterInfo` does not implement, from the PCI address fix #21 wrote.
+Wine's `D3DKMTQueryAdapterInfo` does not implement `KMTQAITYPE_ADAPTERADDRESS`, and
+the shim did serve it for a while. That turned out to *break* GPU detection rather
+than help it -- with the hook in place CAM found no GPU at all, without it the GPU is
+found and reads correctly -- so it is gone. Detection needs only the device node's
+PCI location from fix #21; the readings come from the SDK, not from D3DKMT.
 
 CAM now shows GPU temperature, clock and load, and offers **GPU Temperature** as a
 pump/fan curve source and on the LCD alongside Liquid and CPU.

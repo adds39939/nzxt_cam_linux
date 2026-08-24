@@ -140,5 +140,11 @@ chmod +x "$HOME/.local/bin/nzxt-cam"
 # The launcher runs this to keep GPU readings fresh, so it has to outlive the
 # temporary copy of the release that install.sh unpacked.
 install -m755 "$REPO/scripts/gpu-poll.sh" "$HOME/.local/bin/nzxt-cam-gpu-poll"
+install -m755 "$REPO/scripts/desktop-entries.sh" "$HOME/.local/bin/nzxt-cam-desktop-entries"
+
+# Wine's own shortcut for CAM runs it without the launcher, and so without the GPU
+# poller, the device fixups or the crash guard. Point the shortcuts here instead.
+say "Pointing menu and desktop shortcuts at the launcher"
+"$HOME/.local/bin/nzxt-cam-desktop-entries" "$WINEPREFIX" "$HOME/.local/bin/nzxt-cam" || true
 
 say "Done. Run:  nzxt-cam"

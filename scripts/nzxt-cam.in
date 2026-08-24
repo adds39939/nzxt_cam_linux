@@ -1,12 +1,56 @@
 #!/usr/bin/env bash
 # Launch NZXT CAM in its patched Wine prefix.
+#
+#   nzxt-cam        supervise CAM in this terminal
+#   nzxt-cam -d     the same, detached -- the terminal comes straight back
 export WINEPREFIX="__PREFIX__"
+LOG="$WINEPREFIX/nzxt-cam.log"
+
+# Detaching is handled before the lock below is taken: if this shell held the lock
+# first, the copy it starts would find it held and decline to run.
+detach=0
+args=()
+for a in "$@"; do
+  case "$a" in
+    -d|--detach) detach=1 ;;
+    *)           args+=("$a") ;;
+  esac
+done
+set -- "${args[@]}"
+
+if [ "$detach" = 1 ] && [ -z "${NZXT_CAM_DETACHED:-}" ]; then
+  # The log is appended to by every detached launch, so keep it from growing forever.
+  [ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ] && : > "$LOG"
+  runner=nohup
+  command -v setsid >/dev/null 2>&1 && runner=setsid   # its own session: survives the terminal
+  NZXT_CAM_DETACHED=1 "$runner" "$0" "$@" >>"$LOG" 2>&1 </dev/null &
+  disown 2>/dev/null || true
+  echo "nzxt-cam: running in the background (log: $LOG)"
+  exit 0
+fi
+
+# Wine regenerates its menu and desktop shortcuts whenever it reprocesses CAM's .lnk,
+# and those run CAM directly, with none of what this script does for it. Put any that
+# came back pointing here again.
+if [ -x "$HOME/.local/bin/nzxt-cam-desktop-entries" ]; then
+  NZXT_CAM_QUIET=1 "$HOME/.local/bin/nzxt-cam-desktop-entries" "$WINEPREFIX" >/dev/null 2>&1 || true
+fi
 
 # Only one launcher at a time. Each one supervises CAM and refreshes the GPU
 # readings, so a second fights the first over restarts and over that file -- which
-# looks like readings that flicker or go stale for no reason.
+# looks like readings that flicker or go stale for no reason. CAM itself is no help
+# here: it is not single-instance under Wine, so a second copy really does start, and
+# then two of them drive the same cooler.
 exec 9>"$WINEPREFIX/.nzxt-cam.lock" 2>/dev/null || true
 if command -v flock >/dev/null 2>&1 && ! flock -n 9 2>/dev/null; then
+  # Raise the one already running, which is what clicking the icon again should do.
+  if command -v xdotool >/dev/null 2>&1; then
+    win=$(xdotool search --class "nzxt cam.exe" 2>/dev/null | tail -1)
+    [ -z "$win" ] && win=$(xdotool search --name "NZXT CAM" 2>/dev/null | tail -1)
+    [ -n "$win" ] && xdotool windowactivate "$win" >/dev/null 2>&1
+  elif command -v wmctrl >/dev/null 2>&1; then
+    wmctrl -a "NZXT CAM" >/dev/null 2>&1
+  fi
   echo "nzxt-cam: already running" >&2
   exit 0
 fi
@@ -72,7 +116,8 @@ GPU_POLL="$HOME/.local/bin/nzxt-cam-gpu-poll"
 if [ -x "$GPU_POLL" ]; then
   mkdir -p "$(dirname "$GPU_STATE")"
   "$GPU_POLL" "$GPU_STATE" 2 >/dev/null 2>&1 &
-  trap 'kill $! 2>/dev/null' EXIT
+  poller=$!
+  trap 'kill "$poller" 2>/dev/null' EXIT
 fi
 
 CAM_LOG="$WINEPREFIX/drive_c/users/$USER/AppData/Roaming/NZXT CAM/logs/main.log"

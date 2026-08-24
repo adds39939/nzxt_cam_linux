@@ -44,8 +44,13 @@ when you log in.
 Start it with:
 
 ```bash
-nzxt-cam
+nzxt-cam        # supervised, in this terminal
+nzxt-cam -d     # the same, detached -- the terminal comes straight back
 ```
+
+The menu and desktop shortcuts run that same launcher. Starting CAM any other way
+skips the GPU poller and the device fix-ups it applies, which shows up as GPU readings
+stuck at `n/a` and, after a Wine restart, no cooler.
 
 A `wine` package upgrade overwrites those two drivers, and the cooler stops being
 detected until they are put back — re-run the installer after one.

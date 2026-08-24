@@ -118,11 +118,16 @@ Something not working? See [`docs/troubleshooting.md`](docs/troubleshooting.md).
 * ✅ RAM usage, network throughput and the per-process table
 * ✅ Every page renders, and the window follows your desktop's scaling
 
+## Untested
+
+* ❓ **Any NZXT device other than a Kraken Elite V2.** The work is generic rather than
+  model-specific, so other coolers and RGB controllers may well work — but none have
+  been tried.
+* ❓ **Firmware update.** CAM ships this as separate binaries, so it likely exercises
+  paths none of this work touched. Nothing here has ever written firmware to a cooler.
+
 ## What doesn't
 
-* ❓ **Firmware update** and **any device other than a Kraken Elite V2** are untested.
-  The work is generic rather than model-specific, so other coolers and RGB controllers
-  may well work — but none have been tried, and nothing here has ever written firmware.
 * 🔧 **GPU fan speed** (CAM wants RPM, `nvidia-smi` only exposes a percentage),
   **AMD and Intel GPUs**, and **motherboard fan speeds and temperatures** are not
   implemented yet.

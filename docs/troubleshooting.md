@@ -7,6 +7,20 @@ still alive. Kill the prefix's Wine session:
 WINEPREFIX=~/pfx/nzxt_cam wineserver -k
 ```
 
+**GPU readings are `n/a`, or the cooler is missing, but only sometimes** — CAM was
+started without the launcher. Wine generates its own shortcut for CAM that runs it
+directly, and that one starts none of the GPU polling or device fix-ups. Point the
+shortcuts back at the launcher:
+
+```bash
+~/.local/bin/nzxt-cam-desktop-entries ~/pfx/nzxt_cam
+```
+
+The launcher also does this each time it starts, so running `nzxt-cam` once fixes them
+too. Note that CAM is not single-instance under Wine: launching it a second way while
+it is already running gives two copies fighting over the cooler, which is why the
+launcher refuses to start a second one and raises the existing window instead.
+
 **No text anywhere in the window** — the fonts did not land. Check for them:
 
 ```bash

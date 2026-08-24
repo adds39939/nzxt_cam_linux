@@ -1,19 +1,39 @@
-# NZXT CAM on Linux (Wine)
+<div align="center">
 
-**NZXT CAM 4.76.5** running under Wine, detecting and driving an NZXT cooler,
-including its LCD.
+<img src="docs/nzxt-cam.png" alt="" width="104" height="104">
 
-Out of the box CAM never leaves its loading screen. This repo applies the patches
-needed to get most of it working.
+<h1>NZXT CAM on Linux</h1>
+
+**NZXT's own CAM, running under Wine** — detect and drive the cooler, its pump and<br>
+fan curves, its RGB and its LCD, with every sensor reading taken from Linux itself.
+
+[![Release](https://img.shields.io/github/v/release/adds39939/nzxt_cam_linux?style=flat-square&color=51007A&labelColor=1c1c1e)](https://github.com/adds39939/nzxt_cam_linux/releases/latest)
+[![CAM](https://img.shields.io/badge/CAM-4.76.5-51007A?style=flat-square&labelColor=1c1c1e)](https://nzxt.com/camsoftware)
+[![Wine](https://img.shields.io/badge/wine-11.16-51007A?style=flat-square&labelColor=1c1c1e)](WINE_VERSION)
+[![Platform](https://img.shields.io/badge/Linux-51007A?style=flat-square&labelColor=1c1c1e&label=runs%20on)](#install)
+[![License](https://img.shields.io/badge/license-MIT%20%2B%20LGPL--2.1-6b7280?style=flat-square&labelColor=1c1c1e)](#licensing)
+
+[**Install**](#install) · [GPU readings](#gpu-readings) · [Start on login](#start-on-login) · [What works](#what-works) · [Build it yourself](#building-it-yourself) · [Troubleshooting](docs/troubleshooting.md)
+
+</div>
+
+<br>
+
+Out of the box CAM never leaves its loading screen under Wine. This repository carries
+the patches that get it past that, and the sensor plumbing that makes its readings
+real — nothing inside a Wine prefix can see your hardware on its own.
 
 ![CAM running under Wine](docs/dashboard.png)
 
-CPU and GPU telemetry are read from Linux itself, so both report correctly and either
-can drive the pump and fan curves or appear on the LCD:
+<sub>**The dashboard** — CPU and GPU telemetry taken from Linux's own `hwmon` and DRM
+interfaces and handed to CAM through a shimmed CPUID SDK, because the ring-0 driver it
+normally reads them with cannot work under Wine.</sub>
 
 | Cooling | Lighting |
-|---|---|
+| --- | --- |
 | ![Cooling](docs/cooling.png) | ![Lighting](docs/lighting.png) |
+
+<sub>Either sensor can drive the pump and fan curves, or appear on the cooler's LCD.</sub>
 
 Verified on Arch Linux, `wine-11.16`, KDE/Wayland, with an NZXT Kraken Elite V2
 (`1e71:3012`).
@@ -236,5 +256,7 @@ are therefore **LGPL-2.1-or-later** derivative works of Wine — see `NOTICE` fo
 corresponding-source pointers and rebuild instructions. They are built by CI from the
 patches in this repository, and are not committed here.
 
-No NZXT code or assets are redistributed here; get CAM from NZXT. This project is
-unaffiliated with NZXT.
+No NZXT code is redistributed here — get CAM from NZXT. The CAM icon at the top of
+this page and the screenshots below it are NZXT's artwork, reproduced only to identify
+the software this project patches. "NZXT" and "CAM" are NZXT's trademarks; this project
+is unaffiliated with NZXT and not endorsed by it.

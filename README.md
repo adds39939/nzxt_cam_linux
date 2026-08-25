@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/nzxt-cam.png" alt="" width="104" height="104">
+<img src="docs/nzxt-tux.png" alt="" width="104" height="104">
 
 <h1>NZXT CAM on Linux</h1>
 
@@ -264,7 +264,8 @@ are therefore **LGPL-2.1-or-later** derivative works of Wine — see `NOTICE` fo
 corresponding-source pointers and rebuild instructions. They are built by CI from the
 patches in this repository, and are not committed here.
 
-No NZXT code is redistributed here — get CAM from NZXT. The CAM icon at the top of
-this page and the screenshots below it are NZXT's artwork, reproduced only to identify
-the software this project patches. "NZXT" and "CAM" are NZXT's trademarks; this project
-is unaffiliated with NZXT and not endorsed by it.
+No NZXT code is redistributed here — get CAM from NZXT. The logo at the top of this
+page puts Tux (by Larry Ewing, made with GIMP) into NZXT's wordmark; it and the
+screenshots below it use NZXT's artwork only to identify the software this project
+patches. "NZXT" and "CAM" are NZXT's trademarks; this project is unaffiliated with NZXT
+and not endorsed by it.

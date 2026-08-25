@@ -80,28 +80,20 @@ out of the tray — rather than giving you a second copy of it.
 
 ### CAM's own copy of Wine
 
-The install puts a copy of this machine's Wine in `~/.local/share/nzxt-cam/wine` and
-runs CAM against that, not the distro's. It costs about 1 GB.
+The install gives CAM its own copy of Wine in `~/.local/share/nzxt-cam/wine`, about
+1 GB. That is what makes upgrading your system `wine` safe — CAM does not use it, so an
+upgrade cannot take the cooler away — and it is why none of this needs `sudo`.
 
-That is where the two patched kernel drivers go. They cannot be applied per prefix: the
-`.sys` inside a prefix is only a marker saying the driver exists, and the bytes Wine
-maps come from its own install directory, looked up by name. Put them in `/usr/lib/wine`
-and they need root — and the next `pacman -Syu` quietly replaces them, after which the
-cooler stops being detected with nothing to say why. In `$HOME` no package manager can
-reach them, and the Wine underneath CAM stops moving.
-
-The copy is seeded from your Wine, so it starts as whatever version you have and is
-then pinned to it. If that version is not the one the binaries were built against, the
-installer says so and asks before going ahead. Upgrading your system `wine` afterwards
-changes nothing for CAM; to move it forward deliberately:
+The copy is taken from the Wine you already have, then left alone. To move it on to a
+newer one:
 
 ```bash
-nzxt-cam-wine-tree create      # re-seed from the current system wine
-nzxt-cam-wine-tree version     # what it holds now
+nzxt-cam-wine-tree create      # take a fresh copy of the current system wine
+nzxt-cam-wine-tree version     # which version CAM is using
 ```
 
-Set `NZXT_CAM_WINE_TRIM=1` when creating it to leave out Gecko and Mono, which CAM has
-no use for, saving about 440 MB.
+Adding `NZXT_CAM_WINE_TRIM=1` leaves out two Windows components CAM never uses and
+saves about 440 MB.
 
 ### GPU readings
 

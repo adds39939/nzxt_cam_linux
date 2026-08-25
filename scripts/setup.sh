@@ -25,6 +25,17 @@ for c in wine winetricks cabextract; do
   command -v "$c" >/dev/null || die "missing dependency: $c"
 done
 
+# CAM gets its own copy of Wine, seeded from this machine's, and everything from here
+# runs against that rather than whatever `wine` PATH would find. The two patched kernel
+# drivers can only be applied inside a Wine install directory, so this is what keeps
+# them out of /usr -- no root to install, and no package upgrade to undo them.
+say "Giving CAM its own copy of Wine"
+bash "$REPO/scripts/wine-tree.sh" create
+eval "$(bash "$REPO/scripts/wine-tree.sh" env)"
+
+say "Installing the patched kernel drivers into it"
+bash "$REPO/scripts/install-wine-drivers.sh" | sed 's/^/    /'
+
 WINEVER="$(wine --version)"
 say "Wine: $WINEVER   Prefix: $WINEPREFIX"
 case "$WINEVER" in
@@ -135,13 +146,16 @@ printf '{"pathname":"/"}\n' > "$DS/router.json"
 
 say "Installing launcher -> ~/.local/bin/nzxt-cam"
 mkdir -p "$HOME/.local/bin"
-sed "s|__PREFIX__|$WINEPREFIX|" "$REPO/scripts/nzxt-cam.in" > "$HOME/.local/bin/nzxt-cam"
+WINETREE="$(bash "$REPO/scripts/wine-tree.sh" path)"
+sed -e "s|__PREFIX__|$WINEPREFIX|" -e "s|__WINETREE__|$WINETREE|" \
+    "$REPO/scripts/nzxt-cam.in" > "$HOME/.local/bin/nzxt-cam"
 chmod +x "$HOME/.local/bin/nzxt-cam"
 # The launcher runs this to keep GPU readings fresh, so it has to outlive the
 # temporary copy of the release that install.sh unpacked.
 install -m755 "$REPO/scripts/gpu-poll.sh" "$HOME/.local/bin/nzxt-cam-gpu-poll"
 install -m755 "$REPO/scripts/desktop-entries.sh" "$HOME/.local/bin/nzxt-cam-desktop-entries"
 install -m755 "$REPO/scripts/autostart.sh" "$HOME/.local/bin/nzxt-cam-autostart"
+install -m755 "$REPO/scripts/wine-tree.sh" "$HOME/.local/bin/nzxt-cam-wine-tree"
 
 # Wine's own shortcut for CAM runs it without the launcher, and so without the GPU
 # poller, the device fixups or the crash guard. Point the menu entry here instead --

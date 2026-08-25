@@ -124,6 +124,18 @@ if [ ${#DESKTOP_DIRS[@]} -gt 0 ] || [ ${#DESKTOP_ITEMS[@]} -gt 0 ]; then
     echo "    found $(( ${#DESKTOP_DIRS[@]} + ${#DESKTOP_ITEMS[@]} )) menu entr(ies)/icon(s)"
 fi
 
+# CAM's private copy of Wine. The launcher records where it is, same as the prefix.
+WINETREE="${NZXT_CAM_WINE_TREE:-}"
+if [ -z "$WINETREE" ] && [ -f "$LAUNCHER" ]; then
+    WINETREE="$(sed -n 's/^WINETREE="\(.*\)"$/\1/p' "$LAUNCHER" | head -1)"
+fi
+WINETREE="${WINETREE:-$HOME/.local/share/nzxt-cam/wine}"
+TREE_FOUND=0
+if [ -d "$WINETREE" ] && [ -x "$WINETREE/bin/wine" ]; then
+    TREE_FOUND=1; FOUND=1
+    echo "    found private Wine tree ($(du -sh "$WINETREE" 2>/dev/null | cut -f1))"
+fi
+
 # The start-on-login unit. It is enabled against graphical-session.target, so it has
 # to be disabled before the file goes, otherwise a dangling symlink is left in
 # graphical-session.target.wants and systemd complains about it at every login.
@@ -157,6 +169,7 @@ say "This will remove"
 [ "$PREFIX_OK" -eq 1 ] && echo "    $PREFIX   (CAM, its settings, profiles and logs)"
 [ -f "$LAUNCHER" ]     && echo "    $LAUNCHER"
 for f in "$LAUNCHER"-*; do [ -e "$f" ] && echo "    $f"; done
+[ "$TREE_FOUND" -eq 1 ] && echo "    $WINETREE   (CAM's own copy of Wine)"
 [ "$UNIT_FOUND" -eq 1 ] && echo "    $UNIT   (start on login)"
 [ "$RUNNING" -gt 0 ] 2>/dev/null && echo "    $RUNNING running launcher process(es) will be stopped"
 for f in "${DESKTOP_DIRS[@]:-}";  do [ -n "$f" ] && echo "    $f/   (whole directory)"; done
@@ -201,6 +214,14 @@ if [ "$PREFIX_OK" -eq 1 ]; then
     fi
 fi
 
+if [ "$TREE_FOUND" -eq 1 ]; then
+    say "Removing CAM's copy of Wine"
+    rm -rf "$WINETREE" && echo "    $WINETREE"
+    parent="$(dirname "$WINETREE")"
+    [ -d "$parent" ] && [ -z "$(ls -A "$parent" 2>/dev/null)" ] &&
+        rmdir "$parent" && echo "    also removed empty $parent"
+fi
+
 if [ -f "$LAUNCHER" ] || compgen -G "$LAUNCHER"'*' >/dev/null 2>&1; then
     say "Removing the launcher"
     # The launcher and its helpers all share the nzxt-cam prefix, so take them by
@@ -225,7 +246,9 @@ fi
 
 if [ ${#DRIVER_BACKUPS[@]} -gt 0 ] && [ -z "${KEEP_DRIVERS:-}" ]; then
     say "Restoring Wine's stock drivers"
-    echo "    These were replaced system-wide, so putting them back needs root."
+    echo "    An earlier version of this installer patched Wine system-wide. Current"
+    echo "    ones keep the patched drivers in CAM's own copy of Wine instead, so these"
+    echo "    are left over. Putting them back needs root."
     if confirm "    Restore them now with sudo?"; then
         for b in "${DRIVER_BACKUPS[@]}"; do
             sudo mv -f "$b" "${b%.stock-backup}" && echo "    restored ${b%.stock-backup}"

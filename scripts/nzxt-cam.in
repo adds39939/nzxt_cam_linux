@@ -8,6 +8,28 @@
 #
 # Anything else is handed to CAM, nzxt-cam:// deep links included.
 export WINEPREFIX="__PREFIX__"
+
+# CAM runs against its own copy of Wine, not the distro's. That copy holds the two
+# patched kernel drivers, which can only live in a Wine install directory -- keeping
+# them here rather than in /usr is what stops a wine package upgrade taking the cooler
+# away. Set before anything calls wine, and WINELOADER/WINESERVER as well as PATH, so
+# the processes Wine starts for itself stay inside the tree too.
+WINETREE="__WINETREE__"
+if [ -x "$WINETREE/bin/wine" ]; then
+  export PATH="$WINETREE/bin:$PATH"
+  export WINE="$WINETREE/bin/wine"
+  export WINELOADER="$WINETREE/bin/wine"
+  export WINESERVER="$WINETREE/bin/wineserver"
+  # A tree built without gecko and mono would otherwise have Wine offer to download
+  # them, with a dialog, the first time it touches a prefix.
+  [ -d "$WINETREE/share/wine/gecko" ] ||
+    export WINEDLLOVERRIDES="mscoree,mshtml=d${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
+elif command -v wine >/dev/null 2>&1; then
+  echo "nzxt-cam: no private Wine at $WINETREE -- falling back to the system wine." >&2
+  echo "nzxt-cam: the cooler will not be detected unless its patched drivers are" >&2
+  echo "nzxt-cam: installed. Rebuild the tree with:  nzxt-cam-wine-tree create" >&2
+fi
+
 CAMDIR="$WINEPREFIX/drive_c/Program Files/NZXT CAM"
 LOG="$WINEPREFIX/nzxt-cam.log"
 LOCK="$WINEPREFIX/.nzxt-cam.lock"

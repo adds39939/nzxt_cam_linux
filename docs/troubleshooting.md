@@ -47,12 +47,21 @@ ls ~/pfx/nzxt_cam/drive_c/windows/Fonts/arial.ttf
 
 If it is missing, re-run the installer.
 
-**The cooler is not detected after a `wine` package upgrade** — the upgrade overwrote
-the two patched drivers, which Wine loads from its own install directory rather than
-from the prefix. Re-run the installer to put them back, or from a clone:
+**The cooler is not detected after a `wine` package upgrade** — it should not be, any
+more. CAM runs against its own copy of Wine in `~/.local/share/nzxt-cam/wine`, which is
+where its patched drivers live, and a package upgrade cannot reach it. Check what CAM
+is actually using:
 
 ```bash
-sudo ./scripts/install-wine-drivers.sh
+nzxt-cam-wine-tree version
+```
+
+If that says "not installed", the tree is missing and the launcher has fallen back to
+the system Wine — which has no patched drivers. Rebuilding it re-applies them from the
+copy the install kept:
+
+```bash
+nzxt-cam-wine-tree create
 ```
 
 **The window is the wrong size** — set the scale explicitly:

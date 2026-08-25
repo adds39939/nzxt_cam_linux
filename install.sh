@@ -88,12 +88,25 @@ trap '[ -n "$CLEANUP" ] && rm -rf "$CLEANUP"' EXIT
 [ -f "$REPO/scripts/setup.sh" ] || die "release looks incomplete: $REPO"
 [ -d "$REPO/prebuilt" ] || die "release has no prebuilt/ -- build it with scripts/build-wine-dlls.sh"
 
-# The binaries are built against one Wine version; warn if this machine differs.
+# The binaries are built against one Wine version. Ask here rather than in setup.sh, so
+# the question comes before a 200MB download rather than after it, and pass the answer
+# down so wine-tree.sh does not ask a second time.
 BUILT="$(cat "$REPO/prebuilt/BUILT_AGAINST" 2>/dev/null || cat "$REPO/WINE_VERSION" 2>/dev/null || echo unknown)"
 case "$(wine --version)" in
-    "wine-$BUILT"*) ;;
-    *) warn "these binaries were built against wine-$BUILT, you have $(wine --version)."
-       warn "if anything misbehaves, rebuild with: $REPO/scripts/build-wine-dlls.sh" ;;
+    "wine-$BUILT"|"wine-$BUILT "*|"wine-$BUILT-"*) ;;
+    *)  warn "this machine has $(wine --version), but the patched binaries were built"
+        warn "against wine-$BUILT."
+        echo
+        echo "    Wine's internals move between versions. A mismatch may work perfectly,"
+        echo "    or the cooler may not be detected, or CAM may not start at all. The"
+        echo "    supported fix is to rebuild them against your Wine:"
+        echo "      $REPO/scripts/build-wine-dlls.sh \$(wine --version | sed s/^wine-//)"
+        echo
+        if confirm "    Use them anyway?"; then
+            export NZXT_CAM_ALLOW_WINE_MISMATCH=1
+        else
+            die "stopped. Rebuild against $(wine --version), or re-run and accept the warning."
+        fi ;;
 esac
 
 # ----------------------------------------------------------------- the prefix
@@ -131,27 +144,6 @@ echo "    $(du -h "$INSTALLER" | cut -f1)  $INSTALLER"
 say "Installing (this takes a few minutes)"
 WINEPREFIX="$PREFIX" bash "$REPO/scripts/setup.sh" "$INSTALLER"
 
-# ----------------------------------------------------------------- the drivers
-
-# hidclass.sys and wineusb.sys are kernel drivers: Wine loads them from its own
-# install directory, not from the prefix, so they cannot be overridden per-prefix.
-say "Kernel drivers"
-echo "    Two patched drivers must be installed system-wide for the cooler to be"
-echo "    detected. This needs root, and a wine package upgrade overwrites them."
-if confirm "    Install them now with sudo?"; then
-    sudo bash "$REPO/scripts/install-wine-drivers.sh" || warn "driver install failed"
-    WINEPREFIX="$PREFIX" wineserver -k 2>/dev/null || true
-else
-    echo
-    echo "    Skipped. The cooler will not appear until they are installed."
-    if [ -n "$CLEANUP" ]; then
-        echo "    This copy is temporary, so re-run the installer when you are ready:"
-        echo "      curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/install.sh | bash"
-    else
-        echo "      sudo $REPO/scripts/install-wine-drivers.sh"
-    fi
-fi
-
 # ---------------------------------------------------------------- start on login
 
 say "Start on login"
@@ -169,6 +161,10 @@ fi
 
 say "Done"
 echo "    Launch with:  nzxt-cam        (or  nzxt-cam -d  to get the terminal back)"
+echo
+echo "    CAM has its own copy of Wine under ~/.local/share/nzxt-cam/wine, which is"
+echo "    where its two patched drivers live. Nothing was installed system-wide, so"
+echo "    upgrading your wine package cannot take the cooler away."
 echo
 echo "    If ~/.local/bin is not on your PATH, add it:"
 echo "      export PATH=\"\$HOME/.local/bin:\$PATH\""

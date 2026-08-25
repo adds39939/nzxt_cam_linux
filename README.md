@@ -18,9 +18,9 @@
 
 <br>
 
-Out of the box CAM never leaves its loading screen under Wine. This repository carries
-the patches that get it past that, and the sensor plumbing that makes its readings
-real — nothing inside a Wine prefix can see your hardware on its own.
+This repository carries the Wine patches and the sensor plumbing that make NZXT CAM work
+on Linux: the patches so it detects and drives your cooler, and the plumbing so its
+temperatures, clocks and fan speeds are read from Linux itself.
 
 ![CAM running under Wine](docs/dashboard.png)
 
@@ -57,8 +57,8 @@ curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/install.
 
 That downloads NZXT CAM, asks where to put the Wine prefix (default `~/pfx/nzxt_cam`),
 builds the patched prefix and installs a `nzxt-cam` launcher. It offers to install two
-Wine drivers with `sudo` — without those the cooler is not detected — and to start CAM
-when you log in.
+copy of Wine to keep its two patched drivers in, and to start CAM when you log in.
+Nothing needs root.
 
 Start it with:
 
@@ -78,8 +78,22 @@ from so that it does not come back.
 Starting CAM while it is already running raises the window it is showing — including
 out of the tray — rather than giving you a second copy of it.
 
-A `wine` package upgrade overwrites those two drivers, and the cooler stops being
-detected until they are put back — re-run the installer after one.
+### CAM's own copy of Wine
+
+The install gives CAM its own copy of Wine in `~/.local/share/nzxt-cam/wine`, about
+1 GB. That is what makes upgrading your system `wine` safe — CAM does not use it, so an
+upgrade cannot take the cooler away — and it is why none of this needs `sudo`.
+
+The copy is taken from the Wine you already have, then left alone. To move it on to a
+newer one:
+
+```bash
+nzxt-cam-wine-tree create      # take a fresh copy of the current system wine
+nzxt-cam-wine-tree version     # which version CAM is using
+```
+
+Adding `NZXT_CAM_WINE_TRIM=1` leaves out two Windows components CAM never uses and
+saves about 440 MB.
 
 ### GPU readings
 
@@ -159,7 +173,8 @@ curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/uninstal
 
 That removes the Wine prefix — CAM, its settings, profiles and logs all live inside it
 — along with the launcher, the start-on-login unit, and the menu entries and icons
-Wine created. It then offers to put Wine's stock drivers back, which needs `sudo`.
+Wine created, and CAM's copy of Wine. If an older version of this installer patched
+your system Wine, it offers to put the stock drivers back, which needs `sudo`.
 
 Something not working? See [`docs/troubleshooting.md`](docs/troubleshooting.md).
 
@@ -218,8 +233,10 @@ or build them, which needs a PE cross-compiler (`mingw-w64-gcc` on Arch,
 ```bash
 ./scripts/build-wine-dlls.sh    # builds everything into prebuilt/ (takes a while)
 ./scripts/setup.sh ~/Downloads/NZXT-CAM-Setup.exe
-sudo ./scripts/install-wine-drivers.sh
 ```
+
+`setup.sh` makes the private Wine tree and puts the drivers in it, so there is no
+`sudo` step.
 
 Once `prebuilt/` exists, `install.sh` uses your local build rather than the release.
 If CAM is already installed, omit the installer path and `setup.sh` just applies the

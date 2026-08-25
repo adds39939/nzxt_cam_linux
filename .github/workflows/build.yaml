@@ -1,0 +1,124 @@
+# Build everything in prebuilt/ from source, and the release tarball around it.
+#
+# Those binaries are the only part of this repo that cannot be used as-is from a
+# checkout: patched Wine DLLs, two Wine drivers and three small PE tools. Building them
+# here means install.sh can fetch a tarball that already contains them, so nobody needs
+# a Wine source tree or a PE cross-compiler to install CAM.
+#
+# This runs on every pull request into main, so a change that stops the DLLs building --
+# or that adds a script and forgets to put it in the tarball -- is caught while it is
+# still a pull request, rather than when the next release is cut from it. release.yaml
+# calls this same workflow and publishes the artifact it produced, so what ships is
+# exactly what was tested.
+name: build
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_call:
+    outputs:
+      artifact:
+        description: Name of the artifact holding the release tarball
+        value: ${{ jobs.build.outputs.artifact }}
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact: ${{ steps.pack.outputs.name }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Nearly all of this repo is shell, and a syntax error in it survives review far
+      # too easily. Cheap to rule out before spending twenty minutes building Wine.
+      - name: Check the shell scripts parse
+        run: |
+          rc=0
+          while IFS= read -r f; do
+            if bash -n "$f" 2>/dev/null; then
+              printf '  ok      %s\n' "$f"
+            else
+              printf '  SYNTAX  %s\n' "$f"; bash -n "$f" || true; rc=1
+            fi
+          done < <(find . -path ./.git -prune -o \( -name '*.sh' -o -name '*.in' \) -print | sort)
+          [ "$rc" -eq 0 ] || { echo "shell syntax errors above" >&2; exit 1; }
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential flex bison \
+            gcc-mingw-w64-x86-64 \
+            libusb-1.0-0-dev \
+            curl xz-utils patch ca-certificates
+
+      - name: Build everything in prebuilt/
+        run: |
+          version="$(cat WINE_VERSION)"
+          echo "building against wine-$version"
+          ./scripts/build-wine-dlls.sh "$version"
+
+      - name: Check every artefact was produced
+        run: |
+          missing=0
+          for f in \
+            propsys.dll windows.devices.enumeration.dll cfgmgr32.dll winusb.dll \
+            wintypes.dll setupapi.dll windows.devices.usb.dll \
+            hidclass.sys wineusb.sys wineusb.so \
+            usbtree-fixup.exe gpu-pci-fixup.exe cpuidsdk64_shim.dll \
+            BUILT_AGAINST
+          do
+            if [ -s "prebuilt/$f" ]; then
+              printf '  ok      %s\n' "$f"
+            else
+              printf '  MISSING %s\n' "$f"; missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || { echo "build did not produce everything" >&2; exit 1; }
+
+      - name: Assemble the release tarball
+        id: pack
+        run: |
+          stage="$(mktemp -d)/nzxt-cam-linux"
+          mkdir -p "$stage"
+          # Everything install.sh and the scripts it runs need, plus the sources the
+          # binaries were built from so the tarball can rebuild itself.
+          cp -a install.sh uninstall.sh scripts patches tools prebuilt \
+                WINE_VERSION README.md LICENSE NOTICE "$stage/"
+          tar czf nzxt-cam-linux.tar.gz -C "$(dirname "$stage")" nzxt-cam-linux
+          ls -lh nzxt-cam-linux.tar.gz
+          echo "name=nzxt-cam-linux" >> "$GITHUB_OUTPUT"
+
+      # An install is only as good as what the tarball actually contains, and the list
+      # above is hand-written -- so check the unpacked tree the way install.sh will use
+      # it, rather than trusting that cp -a copied the right names.
+      - name: Check the tarball is installable
+        run: |
+          out="$(mktemp -d)"
+          tar xzf nzxt-cam-linux.tar.gz -C "$out" --strip-components=1
+          rc=0
+          for f in install.sh uninstall.sh scripts/setup.sh scripts/nzxt-cam.in \
+                   scripts/wine-tree.sh scripts/install-wine-drivers.sh \
+                   scripts/gpu-poll.sh scripts/desktop-entries.sh scripts/autostart.sh \
+                   prebuilt/BUILT_AGAINST WINE_VERSION
+          do
+            if [ -s "$out/$f" ]; then printf '  ok      %s\n' "$f"
+            else printf '  MISSING %s\n' "$f"; rc=1; fi
+          done
+          # install.sh refuses to run against a tarball missing either of these.
+          for d in patches prebuilt scripts; do
+            [ -d "$out/$d" ] || { printf '  MISSING %s/\n' "$d"; rc=1; }
+          done
+          [ "$rc" -eq 0 ] || { echo "the tarball is incomplete" >&2; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nzxt-cam-linux
+          path: nzxt-cam-linux.tar.gz
+          if-no-files-found: error
+          retention-days: 7

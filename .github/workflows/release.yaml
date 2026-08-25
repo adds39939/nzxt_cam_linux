@@ -1,9 +1,9 @@
-# Build everything in prebuilt/ from source and publish it as a release.
+# Publish a release from the binaries build.yaml produced.
 #
-# Those binaries are the only part of this repo that cannot be used as-is from a
-# checkout: patched Wine DLLs, two Wine drivers and three small PE tools. Building
-# them here means install.sh can fetch a tarball that already contains them, so
-# nobody needs a Wine source tree or a PE cross-compiler to install CAM.
+# This does not build anything itself. It calls build.yaml -- the same workflow every
+# pull request into main has to pass -- and publishes the artifact that came out of it,
+# so what ships is exactly what was tested rather than a second, separate build that
+# happens to have been run against the same commit.
 name: release
 
 on:
@@ -17,67 +17,36 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
+  build:
+    uses: ./.github/workflows/build.yaml
+
   release:
+    needs: build
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential flex bison \
-            gcc-mingw-w64-x86-64 \
-            libusb-1.0-0-dev \
-            curl xz-utils patch ca-certificates
-
-      - name: Build everything in prebuilt/
-        run: |
-          version="$(cat WINE_VERSION)"
-          echo "building against wine-$version"
-          ./scripts/build-wine-dlls.sh "$version"
-
-      - name: Check every artefact was produced
-        run: |
-          missing=0
-          for f in \
-            propsys.dll windows.devices.enumeration.dll cfgmgr32.dll winusb.dll \
-            wintypes.dll setupapi.dll windows.devices.usb.dll \
-            hidclass.sys wineusb.sys wineusb.so \
-            usbtree-fixup.exe gpu-pci-fixup.exe cpuidsdk64_shim.dll \
-            BUILT_AGAINST
-          do
-            if [ -s "prebuilt/$f" ]; then
-              printf '  ok      %s\n' "$f"
-            else
-              printf '  MISSING %s\n' "$f"; missing=1
-            fi
-          done
-          [ "$missing" -eq 0 ] || { echo "build did not produce everything" >&2; exit 1; }
-
-      - name: Assemble the release tarball
-        run: |
-          stage="$(mktemp -d)/nzxt-cam-linux"
-          mkdir -p "$stage"
-          # Everything install.sh, setup.sh and install-wine-drivers.sh need, plus the
-          # sources the binaries were built from so the tarball can rebuild itself.
-          cp -a install.sh uninstall.sh scripts patches tools prebuilt \
-                WINE_VERSION README.md LICENSE NOTICE "$stage/"
-          tar czf nzxt-cam-linux.tar.gz -C "$(dirname "$stage")" nzxt-cam-linux
-          ls -lh nzxt-cam-linux.tar.gz
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact }}
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          [ -s nzxt-cam-linux.tar.gz ] || { echo "no tarball came back from build" >&2; exit 1; }
+          ls -lh nzxt-cam-linux.tar.gz
+
           tag="v$(date -u +%Y.%m.%d)-${{ github.run_number }}"
           wine_version="$(cat WINE_VERSION)"
 
@@ -89,8 +58,7 @@ jobs:
             echo '```'
             echo
             echo "That downloads NZXT CAM, builds a patched Wine prefix from the tarball"
-            echo "below and installs a \`nzxt-cam\` launcher. It offers to install the two"
-            echo "kernel drivers with \`sudo\` -- without those the cooler is not detected."
+            echo "below and installs a \`nzxt-cam\` launcher."
             echo
             echo "Remove it again with:"
             echo
@@ -98,8 +66,7 @@ jobs:
             echo "curl -L https://raw.githubusercontent.com/${{ github.repository }}/main/uninstall.sh | bash"
             echo '```'
             echo
-            echo "That deletes the Wine prefix, the launcher and the menu entries, and offers"
-            echo "to put Wine's stock drivers back."
+            echo "That deletes the Wine prefix, the launcher and the menu entries."
             echo
             echo "Built against **wine-${wine_version}** from ${{ github.sha }}."
           } > release-notes.md

@@ -130,10 +130,14 @@ if [ -z "$WINETREE" ] && [ -f "$LAUNCHER" ]; then
     WINETREE="$(sed -n 's/^WINETREE="\(.*\)"$/\1/p' "$LAUNCHER" | head -1)"
 fi
 WINETREE="${WINETREE:-$HOME/.local/share/nzxt-cam/wine}"
+DATADIR="$HOME/.local/share/nzxt-cam"
 TREE_FOUND=0
 if [ -d "$WINETREE" ] && [ -x "$WINETREE/bin/wine" ]; then
     TREE_FOUND=1; FOUND=1
     echo "    found private Wine tree ($(du -sh "$WINETREE" 2>/dev/null | cut -f1))"
+elif [ -d "$DATADIR" ]; then
+    FOUND=1
+    echo "    found leftover data directory $DATADIR"
 fi
 
 # The start-on-login unit. It is enabled against graphical-session.target, so it has
@@ -169,7 +173,7 @@ say "This will remove"
 [ "$PREFIX_OK" -eq 1 ] && echo "    $PREFIX   (CAM, its settings, profiles and logs)"
 [ -f "$LAUNCHER" ]     && echo "    $LAUNCHER"
 for f in "$LAUNCHER"-*; do [ -e "$f" ] && echo "    $f"; done
-[ "$TREE_FOUND" -eq 1 ] && echo "    $WINETREE   (CAM's own copy of Wine)"
+[ -d "$DATADIR" ] && echo "    $DATADIR   (CAM's own copy of Wine)"
 [ "$UNIT_FOUND" -eq 1 ] && echo "    $UNIT   (start on login)"
 [ "$RUNNING" -gt 0 ] 2>/dev/null && echo "    $RUNNING running launcher process(es) will be stopped"
 for f in "${DESKTOP_DIRS[@]:-}";  do [ -n "$f" ] && echo "    $f/   (whole directory)"; done
@@ -182,15 +186,27 @@ confirm "    Go ahead?" || die "aborted, nothing was removed"
 
 # ------------------------------------------------------------------------ remove
 
-# First, so that Restart=on-failure cannot put the launcher back while the prefix is
-# being deleted out from under it.
-if [ "$UNIT_FOUND" -eq 1 ]; then
-    say "Removing the start-on-login unit"
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl --user disable --now nzxt-cam.service >/dev/null 2>&1 || true
-    fi
-    rm -f "$UNIT" && echo "    $UNIT"
-    command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload >/dev/null 2>&1 || true
+# Stop it first, so Restart=on-failure cannot put the launcher back while the prefix is
+# being deleted out from under it. The unit file itself goes further down, after the
+# launcher is dead -- see below for why deleting it here does not stick.
+if [ "$UNIT_FOUND" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
+    say "Turning off start on login"
+    systemctl --user disable --now nzxt-cam.service >/dev/null 2>&1 || true
+fi
+
+# The launcher's scripts go before the launcher does, which looks backwards and is not.
+# On the way out it mirrors CAM's "start with Windows" switch back onto the Linux side,
+# and the prefix -- with that switch still set in it -- is still here at this point. Kill
+# it with nzxt-cam-autostart still on disk and its dying act is to write the unit back
+# and enable it, after which nothing removes it again. Deleting a running script is
+# harmless: the shell already has it open.
+if [ -f "$LAUNCHER" ] || compgen -G "$LAUNCHER"'*' >/dev/null 2>&1; then
+    say "Removing the launcher"
+    # The launcher and its helpers all share the nzxt-cam prefix, so take them by
+    # pattern rather than by a list that would go stale as helpers are added.
+    for f in "$LAUNCHER" "$LAUNCHER"-*; do
+        [ -e "$f" ] && rm -f "$f" && echo "    $f"
+    done
 fi
 
 if [ "$RUNNING" -gt 0 ] 2>/dev/null; then
@@ -198,6 +214,16 @@ if [ "$RUNNING" -gt 0 ] 2>/dev/null; then
     for pid in $(launcher_pids); do kill "$pid" 2>/dev/null || true; done
     sleep 2
     for pid in $(launcher_pids); do kill -9 "$pid" 2>/dev/null || true; done
+fi
+
+# Now that nothing is left to re-arm it.
+if [ "$UNIT_FOUND" -eq 1 ]; then
+    say "Removing the start-on-login unit"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user disable nzxt-cam.service >/dev/null 2>&1 || true
+    fi
+    rm -f "$UNIT" && echo "    $UNIT"
+    command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload >/dev/null 2>&1 || true
 fi
 
 if [ "$PREFIX_OK" -eq 1 ]; then
@@ -214,21 +240,12 @@ if [ "$PREFIX_OK" -eq 1 ]; then
     fi
 fi
 
-if [ "$TREE_FOUND" -eq 1 ]; then
+if [ "$TREE_FOUND" -eq 1 ] || [ -d "$DATADIR" ]; then
     say "Removing CAM's copy of Wine"
-    rm -rf "$WINETREE" && echo "    $WINETREE"
-    parent="$(dirname "$WINETREE")"
-    [ -d "$parent" ] && [ -z "$(ls -A "$parent" 2>/dev/null)" ] &&
-        rmdir "$parent" && echo "    also removed empty $parent"
-fi
-
-if [ -f "$LAUNCHER" ] || compgen -G "$LAUNCHER"'*' >/dev/null 2>&1; then
-    say "Removing the launcher"
-    # The launcher and its helpers all share the nzxt-cam prefix, so take them by
-    # pattern rather than by a list that would go stale as helpers are added.
-    for f in "$LAUNCHER" "$LAUNCHER"-*; do
-        [ -e "$f" ] && rm -f "$f" && echo "    $f"
-    done
+    [ -d "$WINETREE" ] && rm -rf "$WINETREE" && echo "    $WINETREE"
+    # The stashed copy of the patched drivers sits beside it, so the directory never
+    # emptied and both were left behind.
+    [ -d "$DATADIR" ] && rm -rf "$DATADIR" && echo "    $DATADIR"
 fi
 
 if [ ${#DESKTOP_DIRS[@]} -gt 0 ] || [ ${#DESKTOP_ITEMS[@]} -gt 0 ]; then

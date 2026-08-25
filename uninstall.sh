@@ -3,13 +3,12 @@
 #
 #   curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/uninstall.sh | bash
 #
-# Removes the Wine prefix (CAM itself, its settings and logs all live inside it), the
-# launcher, and the menu entries and icons Wine's menu builder created. Optionally
-# restores the two patched Wine drivers to their stock versions, which needs root.
+# Removes the Wine prefix (CAM itself, its settings and logs all live inside it), CAM's
+# own copy of Wine, the launcher, and the menu entries and icons Wine's menu builder
+# created. Nothing outside $HOME is touched, so none of it needs root.
 #
 # Non-interactive use:
-#   ASSUME_YES=1 bash uninstall.sh            # also restores the drivers
-#   KEEP_DRIVERS=1 ASSUME_YES=1 bash uninstall.sh
+#   ASSUME_YES=1 bash uninstall.sh
 set -euo pipefail
 
 say()  { printf '\n\033[1;35m==>\033[0m %s\n' "$*"; }
@@ -150,20 +149,8 @@ if [ -f "$UNIT" ]; then
     echo "    found start-on-login unit: $UNIT"
 fi
 
-# Patched drivers, detected by the backups the installer left next to them.
-DRIVER_BACKUPS=()
-for b in /usr/lib/wine/x86_64-windows/hidclass.sys.stock-backup \
-         /usr/lib/wine/x86_64-windows/wineusb.sys.stock-backup \
-         /usr/lib/wine/x86_64-unix/wineusb.so.stock-backup; do
-    [ -f "$b" ] && DRIVER_BACKUPS+=("$b")
-done
-if [ ${#DRIVER_BACKUPS[@]} -gt 0 ]; then
-    FOUND=1
-    echo "    found ${#DRIVER_BACKUPS[@]} patched Wine driver(s) with stock backups"
-fi
-
 if [ "$FOUND" -eq 0 ]; then
-    say "Nothing to remove -- no prefix, launcher, menu entries or patched drivers found."
+    say "Nothing to remove -- no prefix, launcher or menu entries found."
     exit 0
 fi
 
@@ -178,9 +165,6 @@ for f in "$LAUNCHER"-*; do [ -e "$f" ] && echo "    $f"; done
 [ "$RUNNING" -gt 0 ] 2>/dev/null && echo "    $RUNNING running launcher process(es) will be stopped"
 for f in "${DESKTOP_DIRS[@]:-}";  do [ -n "$f" ] && echo "    $f/   (whole directory)"; done
 for f in "${DESKTOP_ITEMS[@]:-}"; do [ -n "$f" ] && echo "    $f"; done
-if [ ${#DRIVER_BACKUPS[@]} -gt 0 ] && [ -z "${KEEP_DRIVERS:-}" ]; then
-    echo "    and restore Wine's stock drivers (needs sudo)"
-fi
 echo
 confirm "    Go ahead?" || die "aborted, nothing was removed"
 
@@ -259,24 +243,6 @@ if [ ${#DESKTOP_DIRS[@]} -gt 0 ] || [ ${#DESKTOP_ITEMS[@]} -gt 0 ]; then
     done
     command -v update-desktop-database >/dev/null 2>&1 &&
         update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
-fi
-
-if [ ${#DRIVER_BACKUPS[@]} -gt 0 ] && [ -z "${KEEP_DRIVERS:-}" ]; then
-    say "Restoring Wine's stock drivers"
-    echo "    An earlier version of this installer patched Wine system-wide. Current"
-    echo "    ones keep the patched drivers in CAM's own copy of Wine instead, so these"
-    echo "    are left over. Putting them back needs root."
-    if confirm "    Restore them now with sudo?"; then
-        for b in "${DRIVER_BACKUPS[@]}"; do
-            sudo mv -f "$b" "${b%.stock-backup}" && echo "    restored ${b%.stock-backup}"
-        done
-    else
-        echo
-        echo "    Skipped. Wine is still using the patched drivers. To undo later:"
-        for b in "${DRIVER_BACKUPS[@]}"; do
-            echo "      sudo mv -f $b ${b%.stock-backup}"
-        done
-    fi
 fi
 
 say "Done"

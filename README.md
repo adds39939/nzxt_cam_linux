@@ -18,9 +18,9 @@
 
 <br>
 
-Out of the box CAM never leaves its loading screen under Wine. This repository carries
-the patches that get it past that, and the sensor plumbing that makes its readings
-real — nothing inside a Wine prefix can see your hardware on its own.
+This repository carries the Wine patches and the sensor plumbing that make NZXT CAM work
+on Linux: the patches so it detects and drives your cooler, and the plumbing so its
+temperatures, clocks and fan speeds are read from Linux itself.
 
 ![CAM running under Wine](docs/dashboard.png)
 

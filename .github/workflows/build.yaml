@@ -32,7 +32,7 @@ jobs:
       artifact: ${{ steps.pack.outputs.name }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Nearly all of this repo is shell, and a syntax error in it survives review far
       # too easily. Cheap to rule out before spending twenty minutes building Wine.
@@ -116,7 +116,7 @@ jobs:
           done
           [ "$rc" -eq 0 ] || { echo "the tarball is incomplete" >&2; exit 1; }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nzxt-cam-linux
           path: nzxt-cam-linux.tar.gz

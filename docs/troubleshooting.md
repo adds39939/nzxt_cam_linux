@@ -39,6 +39,33 @@ hangs part-way through starting, with one process, no window and nothing logged.
 you write a unit of your own, give it `StandardOutput=append:` a file, not the
 default.
 
+**CAM starts fine but no NZXT device is ever detected** — the cooler is owned by
+root. Wine reaches it through `/dev/hidraw*`, and udev leaves those root-only unless a
+rule says otherwise, so CAM enumerates nothing: the window looks completely normal
+while Cooling and Lighting stay empty. `cam.log` gives it away — `Init device list:`
+is followed by the CPU and GPU and no cooler. Check whether you can open it:
+
+```bash
+lsusb | grep 1e71                       # find the device
+ls -l /dev/hidraw*                      # ours should be crw-rw----+, not crw-------
+```
+
+The install offers to write the rule that fixes this; it is skipped when some other
+rule already grants access, which is why machines with liquidctl or OpenRGB never see
+the problem. To put it in by hand:
+
+```bash
+sudo tee /etc/udev/rules.d/60-nzxt-cam.rules >/dev/null <<'RULE'
+KERNEL=="hidraw*", ATTRS{idVendor}=="1e71", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", MODE="0660", TAG+="uaccess"
+RULE
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb
+```
+
+Then restart CAM, so Wine enumerates the bus again:
+`WINEPREFIX=~/pfx/nzxt_cam wineserver -k` and start it back up.
+
 **No text anywhere in the window** — the fonts did not land. Check for them:
 
 ```bash

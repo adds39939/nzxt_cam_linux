@@ -124,6 +124,53 @@ if [ -d "$PREFIX" ] && [ -n "$(ls -A "$PREFIX" 2>/dev/null)" ]; then
 fi
 mkdir -p "$PREFIX"
 
+# --------------------------------------------------------------- device access
+
+# Wine reaches the cooler through /dev/hidraw*, which udev leaves owned by root unless
+# a rule says otherwise. Without one CAM installs and starts perfectly and then
+# enumerates nothing -- the window looks entirely normal while Cooling and Lighting
+# stay empty, which gives no hint at all where to look. Ask here, before the download,
+# for the same reason the Wine question is asked early.
+#
+# Anything that already ships a rule for NZXT's vendor id has covered this (liquidctl
+# and OpenRGB both do), which is why the problem does not show up on every machine.
+UDEV_RULE="/etc/udev/rules.d/60-nzxt-cam.rules"
+udev_rule_text() {
+    cat <<'RULE'
+# NZXT devices -- grant the logged-in seat user access, so Wine's winebus can
+# enumerate them and hand them to NZXT CAM. Installed by nzxt_cam_linux.
+KERNEL=="hidraw*", ATTRS{idVendor}=="1e71", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", MODE="0660", TAG+="uaccess"
+RULE
+}
+
+if grep -rqsE 'ATTRS?\{idVendor\}=="1e71"' /etc/udev/rules.d /usr/lib/udev/rules.d; then
+    echo "    device access: already granted by an existing udev rule"
+else
+    say "Device access"
+    echo "    NZXT devices stay owned by root until a udev rule says otherwise, and Wine"
+    echo "    cannot open one without it -- CAM would run, and detect no cooler."
+    echo "    This is the only part of the install that needs root:"
+    echo "      $UDEV_RULE"
+    UDEV_OK=0
+    if ! command -v sudo >/dev/null 2>&1; then
+        warn "sudo not found -- install the rule by hand (shown at the end)."
+    elif confirm "    Install the udev rule?"; then
+        if udev_rule_text | sudo tee "$UDEV_RULE" >/dev/null &&
+           sudo udevadm control --reload-rules &&
+           sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb; then
+            UDEV_OK=1
+            echo "    installed $UDEV_RULE"
+        else
+            warn "could not install the udev rule -- instructions at the end."
+        fi
+    fi
+    if [ "$UDEV_OK" -eq 0 ]; then
+        UDEV_MANUAL=1
+        warn "without it CAM will start but detect no NZXT device."
+    fi
+fi
+
 # -------------------------------------------------------------- the installer
 
 DL="$(mktemp -d)"
@@ -157,6 +204,17 @@ else
     echo
     echo "    Skipped. Turn it on later from CAM's own settings, or with:"
     echo "      nzxt-cam-autostart add"
+fi
+
+if [ -n "${UDEV_MANUAL:-}" ]; then
+    say "One thing left, as root"
+    echo "    CAM will not see your cooler until this rule is in place:"
+    echo
+    echo "      sudo tee $UDEV_RULE >/dev/null <<'RULE'"
+    udev_rule_text | sed 's/^/      /'
+    echo "      RULE"
+    echo "      sudo udevadm control --reload-rules"
+    echo "      sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb"
 fi
 
 say "Done"

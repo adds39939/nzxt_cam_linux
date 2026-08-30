@@ -5,7 +5,8 @@
 #
 # Removes the Wine prefix (CAM itself, its settings and logs all live inside it), CAM's
 # own copy of Wine, the launcher, and the menu entries and icons Wine's menu builder
-# created. Nothing outside $HOME is touched, so none of it needs root.
+# created, and the udev rule that grants access to the device. Only that rule lives
+# outside $HOME, and removing it is the one step that needs root.
 #
 # Non-interactive use:
 #   ASSUME_YES=1 bash uninstall.sh
@@ -149,6 +150,16 @@ if [ -f "$UNIT" ]; then
     echo "    found start-on-login unit: $UNIT"
 fi
 
+# The udev rule that grants access to the cooler. Keyed on the file name the install
+# writes, so a rule of the user's own -- or one liquidctl or OpenRGB installed under
+# its own name -- is left exactly where it is.
+UDEV_RULE="/etc/udev/rules.d/60-nzxt-cam.rules"
+UDEV_FOUND=0
+if [ -f "$UDEV_RULE" ] && grep -qs 'idVendor}=="1e71"' "$UDEV_RULE"; then
+    UDEV_FOUND=1; FOUND=1
+    echo "    found udev rule: $UDEV_RULE"
+fi
+
 if [ "$FOUND" -eq 0 ]; then
     say "Nothing to remove -- no prefix, launcher or menu entries found."
     exit 0
@@ -162,6 +173,7 @@ say "This will remove"
 for f in "$LAUNCHER"-*; do [ -e "$f" ] && echo "    $f"; done
 [ -d "$DATADIR" ] && echo "    $DATADIR   (CAM's own copy of Wine)"
 [ "$UNIT_FOUND" -eq 1 ] && echo "    $UNIT   (start on login)"
+[ "$UDEV_FOUND" -eq 1 ] && echo "    $UDEV_RULE   (device access; needs root)"
 [ "$RUNNING" -gt 0 ] 2>/dev/null && echo "    $RUNNING running launcher process(es) will be stopped"
 for f in "${DESKTOP_DIRS[@]:-}";  do [ -n "$f" ] && echo "    $f/   (whole directory)"; done
 for f in "${DESKTOP_ITEMS[@]:-}"; do [ -n "$f" ] && echo "    $f"; done
@@ -243,6 +255,19 @@ if [ ${#DESKTOP_DIRS[@]} -gt 0 ] || [ ${#DESKTOP_ITEMS[@]} -gt 0 ]; then
     done
     command -v update-desktop-database >/dev/null 2>&1 &&
         update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+fi
+
+if [ "$UDEV_FOUND" -eq 1 ]; then
+    say "Removing the udev rule"
+    if ! command -v sudo >/dev/null 2>&1; then
+        warn "sudo not found -- remove it by hand: rm $UDEV_RULE"
+    elif sudo rm -f "$UDEV_RULE"; then
+        echo "    $UDEV_RULE"
+        sudo udevadm control --reload-rules >/dev/null 2>&1 || true
+        sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb >/dev/null 2>&1 || true
+    else
+        warn "could not remove $UDEV_RULE -- remove it by hand."
+    fi
 fi
 
 say "Done"

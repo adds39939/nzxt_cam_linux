@@ -102,6 +102,32 @@ correctly but stops cam-core from starting, so no NZXT device is ever detected �
 UI looks completely normal while Cooling and Lighting stay empty and `cam.log` is
 empty.
 
+**KDE forgets that the tray icon should be hidden** — it comes back in the visible
+tray after every reboot. Stock Wine gives its tray icon windows no title, and Plasma's
+`xembedsniproxy` then has nothing to identify the icon by except the X11 window id,
+which is different on every run — so the "keep this hidden" setting is saved against an
+id that never comes back. The patched `explorer.exe` (fix 24 in
+[wine-fixes.md](wine-fixes.md)) names the window after the application instead. Check
+which build is in use:
+
+```bash
+busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher \
+       org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems |
+  sed 's/^as [0-9]* //' | tr -d '"' | tr ' ' '\n' | grep . |
+  while read -r item; do
+    busctl --user get-property "${item%%/*}" "/${item#*/}" \
+           org.kde.StatusNotifierItem Id
+  done
+```
+
+`s "NZXT CAM"` is the patched build and the setting will stick; a bare number means
+CAM is running against a stock `explorer.exe` — reinstall it with
+`scripts/install-wine-drivers.sh`. Hide the icon once more after installing, since it
+arrives under a name the tray has not seen before. Old numeric leftovers accumulate in
+the `hiddenItems=` line of `~/.config/plasma-org.kde.plasma.desktop-appletsrc`; they
+are harmless, and can be deleted from that line by hand. Plasma reads it at login, so
+log out and back in afterwards.
+
 **Inspecting the live UI** — useful when a screenshot will not tell you enough:
 
 ```bash

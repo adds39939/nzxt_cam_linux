@@ -33,7 +33,7 @@ say "Giving CAM its own copy of Wine"
 bash "$REPO/scripts/wine-tree.sh" create
 eval "$(bash "$REPO/scripts/wine-tree.sh" env)"
 
-say "Installing the patched kernel drivers into it"
+say "Installing the patched drivers and explorer into it"
 bash "$REPO/scripts/install-wine-drivers.sh" | sed 's/^/    /'
 
 WINEVER="$(wine --version)"

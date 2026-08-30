@@ -117,16 +117,17 @@ check_version() {
 
 # ------------------------------------------------------------------- create
 
-# A freshly seeded tree is stock Wine. Put the patched drivers back into it, from the
+# A freshly seeded tree is stock Wine. Put the patched pieces back into it, from the
 # copy the driver install kept, so that re-creating the tree is a complete repair rather
-# than a silent downgrade.
+# than a silent downgrade. explorer.exe rides along with the drivers: it is not what
+# makes the cooler work, but losing it quietly brings the reappearing tray icon back.
 apply_stashed_drivers() {
     local win="$TREE/$HOST_LIBNAME/wine/x86_64-windows" unix="$TREE/$HOST_LIBNAME/wine/x86_64-unix" d
     if [ ! -d "$STASH" ]; then
         say "    no patched drivers stashed -- install them with scripts/install-wine-drivers.sh"
         return 0
     fi
-    for d in hidclass.sys wineusb.sys; do
+    for d in hidclass.sys wineusb.sys explorer.exe; do
         [ -f "$STASH/$d" ] || continue
         rm -f "$win/$d"; install -m644 "$STASH/$d" "$win/$d"
         say "    re-applied $d"

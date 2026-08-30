@@ -1,0 +1,52 @@
+--- programs/explorer/systray.c.orig
++++ programs/explorer/systray.c
+@@ -742,9 +742,39 @@
+     return TRUE;
+ }
+ 
++/* Name the icon window after the application that owns it.
++ *
++ * The window title is the only stable identity an X11 system tray has to go on.
++ * KDE's xembedsniproxy, for one, uses _NET_WM_NAME as the StatusNotifierItem id
++ * and falls back to the X11 window id when it is empty -- so an unnamed icon is
++ * a brand new item on every run, and per-icon settings such as "keep this one
++ * hidden" never survive a restart. The tooltip is no good for the job, since
++ * applications rewrite it as their status changes; the executable does not move.
++ */
++static void get_icon_window_name( HWND owner, WCHAR *name, int len )
++{
++    WCHAR path[MAX_PATH], *file, *ext, *p;
++    DWORD pid = 0, size = ARRAY_SIZE( path );
++    HANDLE process;
++
++    name[0] = 0;
++    if (!GetWindowThreadProcessId( owner, &pid ) || !pid) return;
++    if (!(process = OpenProcess( PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid ))) return;
++
++    if (QueryFullProcessImageNameW( process, 0, path, &size ))
++    {
++        for (file = path, p = path; *p; p++) if (*p == '\\' || *p == '/') file = p + 1;
++        for (ext = NULL, p = file; *p; p++) if (*p == '.') ext = p;
++        if (ext && ext != file) *ext = 0;   /* "NZXT CAM.exe" -> "NZXT CAM" */
++        lstrcpynW( name, file, len );
++    }
++    CloseHandle( process );
++}
++
+ /* Adds a new icon record to the list */
+ static BOOL add_icon(NOTIFYICONDATAW *nid)
+ {
++    WCHAR name[MAX_PATH];
+     struct icon  *icon;
+ 
+     TRACE( "id=0x%x, hwnd=%p\n", nid->uID, nid->hWnd );
+@@ -766,7 +796,8 @@
+     icon->owner  = nid->hWnd;
+     icon->display = ICON_DISPLAY_HIDDEN;
+ 
+-    CreateWindowExW( 0, tray_icon_class.lpszClassName, NULL, WS_CLIPSIBLINGS | WS_POPUP,
++    get_icon_window_name( nid->hWnd, name, ARRAY_SIZE( name ));
++    CreateWindowExW( 0, tray_icon_class.lpszClassName, name, WS_CLIPSIBLINGS | WS_POPUP,
+                      0, 0, icon_cx, icon_cy, 0, NULL, NULL, icon );
+     if (!icon->window) ERR( "Failed to create systray icon window\n" );
+ 

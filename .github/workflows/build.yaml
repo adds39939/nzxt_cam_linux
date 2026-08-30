@@ -69,7 +69,7 @@ jobs:
           for f in \
             propsys.dll windows.devices.enumeration.dll cfgmgr32.dll winusb.dll \
             wintypes.dll setupapi.dll windows.devices.usb.dll \
-            hidclass.sys wineusb.sys wineusb.so \
+            hidclass.sys wineusb.sys wineusb.so explorer.exe \
             usbtree-fixup.exe gpu-pci-fixup.exe cpuidsdk64_shim.dll \
             BUILT_AGAINST
           do

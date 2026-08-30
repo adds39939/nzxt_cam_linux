@@ -453,6 +453,73 @@ app can always be recovered by relaunching it. The page itself is still fatal;
 nothing here makes capture work.
 
 
+### 24. The tray icon is a new application on every boot
+
+**Symptom:** on KDE, hiding CAM's system tray icon never sticks. Every reboot puts it
+back in the visible tray, and the tray's own config has grown another entry:
+
+```
+hiddenItems=...,steam,plasmashell_microphone,31457291,25165835,18874379,20971531
+                                             ^^^^^^^^ one dead entry per boot
+```
+
+**Cause:** Wine's `explorer.exe` created every tray icon window with no title:
+
+```c
+CreateWindowExW( 0, tray_icon_class.lpszClassName, NULL, WS_CLIPSIBLINGS | WS_POPUP,
+                 0, 0, icon_cx, icon_cy, 0, NULL, NULL, icon );
+```
+
+An X11 tray icon is an XEmbed window, and on Plasma `xembedsniproxy` wraps each one in
+a StatusNotifierItem whose `Id` comes from the window title -- falling back to the raw
+window id when there isn't one:
+
+```cpp
+QString SNIProxy::Title() const {
+    KWindowInfo window(m_windowId, NET::WMName);    // _NET_WM_NAME
+    return window.name();
+}
+QString SNIProxy::Id() const {
+    const auto title = Title();
+    // we always need /some/ ID so if no window title exists, just use the winId.
+    if (title.isEmpty()) return QString::number(m_windowId);
+    return title;
+}
+```
+
+So the icon's identity was an X11 window id -- `0x140000B` this boot, `0x1E0000B` the
+last one. Plasma was storing the preference correctly the whole time, against an id
+that never comes back. Nothing about this is CAM-specific: every Wine tray icon on
+every desktop that tries to remember something per-icon has the same problem.
+
+**Fix:** patch 20 names the icon window after the executable that owns it --
+`QueryFullProcessImageNameW` on the owner window's process, basename, extension
+dropped -- so the window carries `_NET_WM_NAME = "NZXT CAM"` from the moment it is
+created, before it docks. The tooltip would have been the obvious thing to use, but
+applications rewrite it as their status changes and the id would move again.
+
+Check what the desktop sees:
+
+```bash
+busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher \
+       org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems |
+  sed 's/^as [0-9]* //' | tr -d '"' | tr ' ' '\n' | grep . |
+  while read -r item; do
+    busctl --user get-property "${item%%/*}" "/${item#*/}" \
+           org.kde.StatusNotifierItem Id
+  done
+```
+
+`s "NZXT CAM"` is the patched build; a bare number is the stock one.
+
+Two things the patch cannot do for you. The icon arrives under its new name as an item
+the tray has never seen, so **hide it once more** after installing -- that time it
+sticks. And the dead numeric entries left behind are still in `hiddenItems` in
+`~/.config/plasma-org.kde.plasma.desktop-appletsrc`; they do no harm, but they can be
+deleted from that line by hand. Plasma reads the file at login, so log out and back in
+rather than expecting the edit to take hold live.
+
+
 ## The USB device tree
 
 Not a patch, but the same kind of gap. CAM correlates a HID interface with its
@@ -498,3 +565,8 @@ install directory, not the prefix, and a driver **cannot** be overridden per-pre
 marking one `native` makes `winehid` fail with `STATUS_DLL_INIT_FAILED` and breaks all
 HID. That is why `scripts/install-wine-drivers.sh` needs `sudo`, and why it has to be
 re-run after any `wine` package upgrade.
+
+The patched `explorer.exe` from fix 24 travels with them. It is not a driver and could
+in principle be overridden per prefix, but it is loaded from the same install directory
+for the same reason, so the one script installs all three and `wine-tree.sh` puts all
+three back when the private tree is re-seeded.

@@ -7,6 +7,7 @@
 #
 #   hidclass.sys  publishes DEVPKEY_DeviceInterface_HID_* on HID interfaces
 #   wineusb.sys   registers GUID_DEVINTERFACE_USB_DEVICE so USB devices are enumerable
+#   explorer.exe  names each tray icon window after the application that owns it
 #
 # These cannot be applied per prefix -- Wine takes the .sys inside a prefix as a marker
 # that the driver exists and maps the bytes from its own install directory, by name.
@@ -68,12 +69,35 @@ for drv in hidclass.sys wineusb.sys; do
   install -m644 "$SRC" "$DEST"
   echo "installed $drv"
 done
+
+# explorer.exe owns Wine's system tray. Stock, it creates every icon window untitled,
+# and a tray with no title to go on falls back to the X11 window id for the icon's
+# identity -- a fresh one on every run, so "keep this icon hidden" is set against an id
+# that never comes back and the icon reappears after each reboot. The patched build
+# names the window after the owning executable instead.
+#
+# Unlike the drivers this one is cosmetic, and prebuilt sets from before it existed do
+# not carry it, so a missing binary is skipped rather than fatal -- the cooler does not
+# depend on it.
+SRC="$REPO/prebuilt/explorer.exe"; DEST="$DESTDIR/explorer.exe"
+if [ ! -f "$SRC" ]; then
+  echo "skipped explorer.exe (not in prebuilt/ -- tray icons keep their old behaviour)"
+elif [ ! -f "$DEST" ]; then
+  echo "skipped explorer.exe (not found: $DEST)" >&2
+else
+  [ -f "$DEST.stock-backup" ] ||
+    { cp -a "$DEST" "$DEST.stock-backup"; echo "backed up -> explorer.exe.stock-backup"; }
+  rm -f "$DEST"
+  install -m644 "$SRC" "$DEST"
+  echo "installed explorer.exe"
+fi
+
 # Keep a copy next to the tree. Re-seeding it (after deliberately moving to a newer
 # Wine, say) then puts these back by itself, instead of handing back a stock tree that
 # looks fine and detects nothing.
 STASH="${NZXT_CAM_DRIVER_STASH:-$HOME/.local/share/nzxt-cam/drivers}"
 mkdir -p "$STASH"
-for f in hidclass.sys wineusb.sys wineusb.so; do
+for f in hidclass.sys wineusb.sys wineusb.so explorer.exe; do
   [ -f "$REPO/prebuilt/$f" ] && install -m644 "$REPO/prebuilt/$f" "$STASH/$f"
 done
 [ -f "$REPO/prebuilt/BUILT_AGAINST" ] && install -m644 "$REPO/prebuilt/BUILT_AGAINST" "$STASH/BUILT_AGAINST"

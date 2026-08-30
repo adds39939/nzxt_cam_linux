@@ -66,6 +66,16 @@ build_driver() {            # $1 = dir, $2 = output name (stays builtin)
   echo "    built $2 (builtin driver)"
 }
 
+# Same again for a builtin program. explorer.exe keeps its marker too: Wine starts it
+# as a builtin, and stripping that makes the loader look for a native explorer.exe
+# that is not there.
+build_program() {           # $1 = programs/ dir, $2 = output name (stays builtin)
+  make -j"$(nproc)" "programs/$1/x86_64-windows/$2" >/dev/null
+  cp "programs/$1/x86_64-windows/$2" "$REPO/prebuilt/$2"
+  x86_64-w64-mingw32-strip "$REPO/prebuilt/$2"
+  echo "    built $2 (builtin program)"
+}
+
 echo "==> Building components"
 relink_native propsys                      propsys.dll
 relink_native windows.devices.enumeration  windows.devices.enumeration.dll
@@ -76,6 +86,7 @@ relink_native setupapi                     setupapi.dll
 relink_native windows.devices.usb          windows.devices.usb.dll
 build_driver  hidclass.sys                 hidclass.sys
 build_driver  wineusb.sys                  wineusb.sys
+build_program explorer                     explorer.exe
 
 # wineusb.sys also has a Unix half (libusb backend) sharing structs with the PE
 # side; building only one of the two mismatches the ABI.

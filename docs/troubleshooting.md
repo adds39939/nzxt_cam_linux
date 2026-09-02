@@ -120,6 +120,33 @@ flatpak list | grep GL.nvidia
 Note that NVIDIA reports fan speed as a percentage where CAM's field is RPM, so the fan
 stays `n/a` there by design rather than showing a number in the wrong unit.
 
+**Two "NZXT CAM" entries in the KDE system tray** — only one of them is CAM. The other
+is Plasma's *Background Apps* indicator, and it is not something this project creates.
+
+`xdg-desktop-portal` tracks sandboxed applications that keep running without a visible
+window, and Plasma lists each one in the tray under the application's own name and
+icon. CAM lives in the tray, so it qualifies. Ask the portal directly:
+
+```bash
+busctl --user call org.freedesktop.background.Monitor /org/freedesktop/background/monitor \
+  org.freedesktop.DBus.Properties Get ss org.freedesktop.background.Monitor BackgroundApps
+```
+
+Telling the two apart: CAM's real tray icon carries CAM's own menu, is registered as a
+`StatusNotifierItem` with the id `NZXT CAM`, and is proxied out of Wine by
+`xembedsniproxy`. The Background Apps entry uses the id
+`io.github.adds39939.NzxtCamLinux` and appears in no watcher at all:
+
+```bash
+busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher \
+       org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems
+```
+
+Hide it in *Configure System Tray → Entries* by setting the entry with the application
+icon to **Never show (disabled)**. Do not hide the other one — that is the icon with
+CAM's menu on it. Nothing the application can do suppresses the indicator; it comes
+with being a Flatpak that runs in the tray.
+
 **KDE forgets that the tray icon should be hidden** — it comes back in the visible tray
 after every reboot. Stock Wine gives its tray icon windows no title, and Plasma's
 `xembedsniproxy` then has nothing to identify the icon by except the X11 window id,

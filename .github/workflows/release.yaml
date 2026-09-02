@@ -79,8 +79,7 @@ jobs:
             echo '```'
             echo
             echo "The first run downloads NZXT CAM from NZXT and installs it into the"
-            echo "bundled Wine prefix. Nothing else is needed on the host -- no wine, no"
-            echo "winetricks, no cabextract."
+            echo "bundled Wine prefix."
             echo
             echo "Remove it again with:"
             echo

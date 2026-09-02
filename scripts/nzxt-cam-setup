@@ -130,8 +130,11 @@ settle
 # their original .exe form only, so they cannot ship inside the Flatpak.
 if [ ! -f "$WINEPREFIX/drive_c/windows/Fonts/arial.ttf" ]; then
     step "Installing corefonts (required -- CAM will not render without them)"
-    winetricks -q corefonts >/dev/null 2>&1 ||
-        die "could not install corefonts -- check the network and try --reinstall"
+    # Not silenced: when this fails it is the only thing standing between the user and
+    # an app that starts to a blank window, and winetricks says why. The launcher sends
+    # all of this to the prefix log.
+    winetricks -q corefonts ||
+        die "could not install corefonts -- see the output above, then try --reinstall"
     [ -f "$WINEPREFIX/drive_c/windows/Fonts/arial.ttf" ] ||
         die "corefonts did not install; CAM would start to a blank window"
     settle

@@ -59,6 +59,13 @@ finish-args:
   - --talk-name=org.freedesktop.Notifications
   # Wine wants ptrace for its own processes. Flathub's own Wine sets this.
   - --allow=devel
+  # Without this the sandbox's seccomp filter refuses to start a 32-bit process, and
+  # Wine's WoW64 half is dead weight: `wine .../i386-windows/cmd.exe` answers
+  # "Application could not be started", wineboot never runs the inf's Wow64Install
+  # section, C:\windows\syswow64 stays empty, and winetricks then fails to register a
+  # single font. Everything about that failure points at the Wine build rather than at
+  # a missing permission, which is what makes it worth a comment this long.
+  - --allow=multiarch
   - --env=WINEPREFIX=/var/data/wineprefix
   # Gecko and Mono are Wine's IE and .NET packages. CAM is Electron and uses neither,
   # so they are not bundled -- and Wine is told not to go looking, or it offers to
@@ -68,7 +75,18 @@ finish-args:
 modules:
   - name: wine
     config-opts:
-      - --enable-win64
+      # New WoW64: 32-bit PE files, 64-bit Unix side, and no 32-bit Unix libraries
+      # anywhere -- so this needs the i686 cross compiler from the same SDK extension
+      # and nothing else. It is exactly the shape of the Wine CAM was developed and
+      # verified against (i386-windows + x86_64-windows + x86_64-unix, and no
+      # i386-unix), which is reason enough on its own.
+      #
+      # A pure --enable-win64 build does not work here. NZXT's installer and CAM are
+      # both x86-64, so it looks like it should, but there is then no C:\windows\
+      # syswow64 -- and winetricks registers every font it installs by running
+      # syswow64\regedit.exe. corefonts aborts on the first one, and without fonts
+      # Chromium renders zero-height text and CAM's renderer dies on a NOTREACHED.
+      - --enable-archs=i386,x86_64
       - --disable-tests
       # Wine's menu builder writes .desktop files and icons for everything a Windows
       # installer asks for. Inside the sandbox they would go nowhere useful, and on
@@ -76,7 +94,9 @@ modules:
       # desktop shortcut, Wine makes one, and it comes back every time Wine reprocesses
       # the .lnk. Not building it is the end of that.
       - --disable-winemenubuilder
-      - --with-mingw=x86_64-w64-mingw32-gcc
+      # No value: configure then looks up <cpu>-w64-mingw32-gcc for each arch above.
+      # Naming one compiler here would force it on both and break the i386 half.
+      - --with-mingw
       # The SDK carries OpenCL headers, so configure enables dlls/opencl, and they are
       # then too new for it: every deprecated entry point it thunks (clUnloadCompiler,
       # clSetUserEventStatus, ...) is compiled out of them and the build fails on the

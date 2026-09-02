@@ -78,6 +78,17 @@ jobs:
             exit 1; }
           printf '  ok      manifest builds wine-%s\n' "$want"
 
+          # --allow=multiarch looks like it belongs to a 32-bit application and this
+          # one is x86-64 throughout, so it is an easy permission to drop as dead
+          # weight. Without it the sandbox's seccomp filter refuses to start any
+          # 32-bit process: Wine's WoW64 half never runs, C:\windows\syswow64 stays
+          # empty, and the first run dies several minutes in when winetricks cannot
+          # register a font. Nothing about that failure points here.
+          grep -q -- '--allow=multiarch' "$MANIFEST" || {
+            echo "the manifest has no --allow=multiarch; WoW64 will not work" >&2
+            exit 1; }
+          printf '  ok      --allow=multiarch is set (WoW64 needs it)\n'
+
       - name: Check the desktop entry and AppStream data
         run: |
           sudo apt-get update
@@ -145,6 +156,13 @@ jobs:
           check bin/wine                            "Wine itself"
           check bin/winetricks                      "corefonts on first run"
           check bin/cabextract                      "what winetricks unpacks with"
+          # The 32-bit PE half. CAM and NZXT's installer are both x86-64, so it is easy
+          # to think this is dead weight -- but winetricks registers every font it
+          # installs by running syswow64\regedit.exe, and without it corefonts aborts
+          # on the first font and CAM starts to a blank window. Losing this silently is
+          # a bug that only shows up several minutes into a user's first run.
+          check lib/wine/i386-windows/regedit.exe   "syswow64, which winetricks needs"
+          check lib/wine/i386-windows/ntdll.dll     "the 32-bit PE half"
           [ "$rc" -eq 0 ] || { echo "the build is incomplete" >&2; exit 1; }
 
           # A patched DLL that silently fell back to the stock one would pass every

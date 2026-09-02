@@ -144,8 +144,8 @@ check_device_access
 # but stops cam-core from starting, so no NZXT device is ever detected -- the UI looks
 # perfectly fine while the Cooling and Lighting pages stay empty.
 #
-# kscreen-doctor and friends are not in the sandbox, so the scale comes from the
-# settings portal, which both GNOME and KDE answer. Override it for good with:
+# kscreen-doctor is outside the sandbox, so the scale has to come from somewhere the
+# app can reach. Override the lot with:
 #   flatpak override --user --env=NZXT_CAM_SCALE=1.5 io.github.adds39939.NzxtCamLinux
 
 # gdbus prints a ReadOne result as its full variant -- "(<uint32 1>,)" for an integer,
@@ -159,20 +159,37 @@ portal_read() {                 # portal_read <namespace> <key>
     | sed 's/^[a-z0-9]* //'
 }
 
-# What GTK itself does: an integer window scale times a fractional text scale. A
-# desktop that answers neither leaves both at 1.
-desktop_scale() {
+# What GTK itself does: an integer window scale times a fractional text scale.
+#
+# This is the fallback rather than the answer, because the key cannot express a
+# fractional scale and KDE therefore reports 1 for a display at 125% or 145%. Trusting
+# it is how CAM ended up rendering at 100% on a scaled KDE desktop.
+portal_dpi() {
   local factor text
   factor="$(portal_read org.gnome.desktop.interface scaling-factor)"
   text="$(portal_read org.gnome.desktop.interface text-scaling-factor)"
   awk -v f="${factor:-1}" -v t="${text:-1}" \
-      'BEGIN { if (f < 1) f = 1; if (t < 0.5) t = 1; printf "%.4f", f * t }'
+      'BEGIN { if (f < 1) f = 1; if (t < 0.5) t = 1; printf "%d", (96 * f * t) + 0.5 }'
+}
+
+# In order: what the user asked for, what the desktop tells its X clients, what the
+# portal can manage. See scripts/nzxt-cam-xdpi for why the middle one is the good one.
+target_dpi() {
+  local dpi
+  if [ -n "${NZXT_CAM_SCALE:-}" ]; then
+    awk -v s="$NZXT_CAM_SCALE" 'BEGIN{printf "%d", (s*96)+0.5}'
+    return 0
+  fi
+  if dpi="$(nzxt-cam-xdpi 2>/dev/null)" && [ -n "$dpi" ]; then
+    printf '%s\n' "$dpi"
+    return 0
+  fi
+  portal_dpi
 }
 
 apply_scale() {
-  local scale dpi cur
-  scale="${NZXT_CAM_SCALE:-$(desktop_scale)}"
-  dpi=$(awk -v s="$scale" 'BEGIN{printf "%d", (s*96)+0.5}')
+  local dpi cur
+  dpi="$(target_dpi)"
   [ "$dpi" -ge 96 ] 2>/dev/null || return 0
   cur=$(wine reg query 'HKCU\Control Panel\Desktop' /v LogPixels 2>/dev/null \
         | awk '/LogPixels/{print strtonum($NF)}')
@@ -180,6 +197,7 @@ apply_scale() {
   # would bounce the wineserver on every first launch for no change at all.
   [ -z "${cur:-}" ] && [ "$dpi" = 96 ] && return 0
   if [ "$dpi" != "${cur:-}" ]; then
+    echo "nzxt-cam: setting Wine's DPI to $dpi"
     wine reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$dpi" /f >/dev/null 2>&1
     wineserver -w
   fi

@@ -245,6 +245,7 @@ modules:
     build-commands:
       - install -Dm755 -t /app/bin scripts/nzxt-cam scripts/nzxt-cam-setup
         scripts/nzxt-cam-autostart scripts/nzxt-cam-gpu-poll scripts/nzxt-cam-nvml
+        scripts/nzxt-cam-xdpi
       - install -Dm644 udev/60-nzxt-cam.rules -t /app/share/nzxt-cam
       - install -Dm644 flatpak/io.github.adds39939.NzxtCamLinux.desktop
         -t /app/share/applications

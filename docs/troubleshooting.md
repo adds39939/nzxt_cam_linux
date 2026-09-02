@@ -77,12 +77,25 @@ release's bundle over the top; the prefix is kept, so CAM's settings survive:
 flatpak install --user nzxt-cam-linux.flatpak     # from the older release
 ```
 
-**The window is the wrong size** — the launcher takes the scale from the desktop
-settings portal, which not every desktop answers usefully. Set it explicitly:
+**The window is the wrong size** — the launcher sets Wine's DPI from the `Xft.dpi` X
+resource, which is what KDE and GNOME publish to their X clients. See what it found,
+and what it did with it:
+
+```bash
+flatpak run --command=nzxt-cam-xdpi io.github.adds39939.NzxtCamLinux   # the DPI, or nothing
+grep 'setting Wine' $PFX/nzxt-cam.log                                  # what it applied
+```
+
+If it prints nothing, your desktop sets no `Xft.dpi` and the launcher falls back to the
+settings portal — which reports only an integer scale, so a fractional one comes out as
+100%. Set it explicitly:
 
 ```bash
 flatpak override --user --env=NZXT_CAM_SCALE=1.5 io.github.adds39939.NzxtCamLinux
 ```
+
+To confirm the renderer actually took it, `1.45` scaling should show as a
+`devicePixelRatio` of `1.4479` (139/96) under the remote debugger below.
 
 Do **not** use Chromium's `--force-device-scale-factor` instead. It sizes the window
 correctly but stops cam-core from starting, so no NZXT device is ever detected — the UI

@@ -52,7 +52,9 @@ jobs:
               printf '  SYNTAX  %s\n' "$f"; bash -n "$f" || true; rc=1
             fi
           done
-          python3 -m py_compile scripts/nzxt-cam-nvml && printf '  ok      %s\n' scripts/nzxt-cam-nvml
+          for f in scripts/nzxt-cam-nvml scripts/nzxt-cam-xdpi; do
+            python3 -m py_compile "$f" && printf '  ok      %s\n' "$f" || rc=1
+          done
           [ "$rc" -eq 0 ] || { echo "shell syntax errors above" >&2; exit 1; }
 
       # The manifest names each patch by hand. Adding one to patches/ and forgetting to
@@ -153,6 +155,7 @@ jobs:
           check bin/nzxt-cam-autostart              "start on login"
           check bin/nzxt-cam-gpu-poll               "GPU readings"
           check bin/nzxt-cam-nvml                   "GPU readings on NVIDIA"
+          check bin/nzxt-cam-xdpi                   "display scaling"
           check bin/wine                            "Wine itself"
           check bin/winetricks                      "corefonts on first run"
           check bin/cabextract                      "what winetricks unpacks with"

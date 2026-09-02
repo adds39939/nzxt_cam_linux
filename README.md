@@ -169,11 +169,24 @@ straight to the tray.
 ## Display scaling
 
 CAM always renders at 100%, so on a scaled display it comes out small. The launcher
-asks the desktop settings portal for your scale and sets Wine's DPI to match. Override
-it for good with:
+reads the DPI your desktop publishes to its X clients (the `Xft.dpi` X resource — 139
+for a 1.45 scale) and sets Wine's DPI to match, which Chromium then reports as its
+device pixel ratio.
+
+Not the desktop settings portal: its `scaling-factor` key is an integer, so KDE answers
+`1` for a display at 125% or 145% and CAM comes out at 100% again. The portal is only
+the fallback for a desktop that sets no `Xft.dpi`.
+
+Override the lot with:
 
 ```bash
 flatpak override --user --env=NZXT_CAM_SCALE=1.5 io.github.adds39939.NzxtCamLinux
+```
+
+Check what it worked out with:
+
+```bash
+flatpak run --command=nzxt-cam-xdpi io.github.adds39939.NzxtCamLinux   # prints the DPI
 ```
 
 ## What works

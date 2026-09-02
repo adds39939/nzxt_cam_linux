@@ -189,6 +189,23 @@ Check what it worked out with:
 flatpak run --command=nzxt-cam-xdpi io.github.adds39939.NzxtCamLinux   # prints the DPI
 ```
 
+## The system tray on KDE
+
+CAM shows two tray entries on Plasma, and only one of them is CAM. The other is Plasma's
+*Background Apps* indicator: `xdg-desktop-portal` reports every sandboxed application
+running without a visible window, and CAM lives in the tray, so it qualifies. Nothing
+here creates it and nothing here can suppress it.
+
+Keep whichever you prefer. To drop Wine's icon and leave Plasma's:
+
+```bash
+flatpak override --user --env=NZXT_CAM_TRAY=0 io.github.adds39939.NzxtCamLinux
+```
+
+To keep Wine's — the one with CAM's own menu on it — set the other entry to *Never show
+(disabled)* in *Configure System Tray → Entries*. See
+[`docs/troubleshooting.md`](docs/troubleshooting.md) for how to tell them apart.
+
 ## What works
 
 * ✅ **Kraken Elite V2 detected** (`1e71:3012`) and driven over WinUSB

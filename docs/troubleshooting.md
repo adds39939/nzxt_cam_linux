@@ -142,10 +142,27 @@ busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher 
        org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems
 ```
 
-Hide it in *Configure System Tray → Entries* by setting the entry with the application
-icon to **Never show (disabled)**. Do not hide the other one — that is the icon with
-CAM's menu on it. Nothing the application can do suppresses the indicator; it comes
-with being a Flatpak that runs in the tray.
+Nothing the application can do suppresses the Background Apps indicator; it comes with
+being a Flatpak that runs in the tray. So pick which of the two you want and turn the
+other off.
+
+Keep CAM's own icon and hide Plasma's: in *Configure System Tray → Entries*, set the
+entry carrying the **application** icon to **Never show (disabled)**.
+
+Or keep Plasma's and stop Wine publishing one at all:
+
+```bash
+flatpak override --user --env=NZXT_CAM_TRAY=0 io.github.adds39939.NzxtCamLinux
+```
+
+That sets `NoTrayItemsDisplay`, the stock Windows policy for hiding tray icons, which
+Wine implements — so the icon is never created rather than created and hidden. Note
+that CAM's *close minimizes to tray* setting then has nowhere to minimize to: closing
+the window leaves CAM running with no icon to click. Starting it again brings the
+window back, which is what the launcher's single-instance handling does anyway.
+
+On desktops other than KDE there is no Background Apps indicator, and Wine's icon is
+the only one there is — which is why this is off by default.
 
 **KDE forgets that the tray icon should be hidden** — it comes back in the visible tray
 after every reboot. Stock Wine gives its tray icon windows no title, and Plasma's

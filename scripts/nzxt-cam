@@ -203,6 +203,42 @@ apply_scale() {
   fi
 }
 
+# ----------------------------------------------------------------- tray icon
+
+# Wine's explorer publishes CAM's tray icon as an XEmbed window, which KDE proxies into
+# a StatusNotifierItem. On a Flatpak that produces a second entry, because Plasma also
+# lists the app under its Background Apps indicator -- xdg-desktop-portal reports every
+# sandboxed application that runs without a visible window, and CAM lives in the tray.
+# The two look alike and only one of them has CAM's menu on it.
+#
+# NZXT_CAM_TRAY=0 turns Wine's icon off, leaving Plasma's entry as the only one:
+#   flatpak override --user --env=NZXT_CAM_TRAY=0 io.github.adds39939.NzxtCamLinux
+#
+# NoTrayItemsDisplay is the stock Windows policy for this and Wine implements it, so
+# there is nothing to patch. It suppresses every tray icon in the prefix, which here
+# means CAM's, since nothing else runs in it.
+#
+# Off by default. Desktops other than KDE have no Background Apps indicator, and there
+# this is the only tray icon there is -- turning it off by default would leave those
+# users with no tray icon at all.
+TRAY_POLICY='HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+apply_tray_policy() {
+  local want cur
+  want=0
+  [ "${NZXT_CAM_TRAY:-1}" = "0" ] && want=1
+  cur=$(wine reg query "$TRAY_POLICY" /v NoTrayItemsDisplay 2>/dev/null \
+        | awk '/NoTrayItemsDisplay/{print strtonum($NF)}')
+  [ "${cur:-0}" = "$want" ] && return 0
+  if [ "$want" = 1 ]; then
+    echo "nzxt-cam: hiding Wine's tray icon (NZXT_CAM_TRAY=0)"
+    wine reg add "$TRAY_POLICY" /v NoTrayItemsDisplay /t REG_DWORD /d 1 /f >/dev/null 2>&1
+  else
+    echo "nzxt-cam: restoring Wine's tray icon"
+    wine reg delete "$TRAY_POLICY" /v NoTrayItemsDisplay /f >/dev/null 2>&1
+  fi
+  wineserver -w
+}
+
 # --------------------------------------------------------------- device fixups
 
 # Wine's PnP manager rebuilds the device tree (and rewrites DEVPKEY_Device_Parent)
@@ -304,6 +340,7 @@ raiser=$!
 
 cd "$CAMDIR" || exit 1
 apply_scale
+apply_tray_policy
 
 attempt=0
 while :; do

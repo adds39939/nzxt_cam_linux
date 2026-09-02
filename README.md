@@ -90,7 +90,8 @@ These come from the kernel's own `hwmon` and DRM interfaces, which are visible i
 the flatpak sandbox.
 
 NVIDIA's proprietary driver registers no `hwmon` node and exposes nothing useful in
-sysfs, so readings come from NVML — `libnvidia-ml.so.1` — which is bundled with the Flatpak.
+sysfs, so readings come from NVML — `libnvidia-ml.so.1` — which Flatpak installs
+alongside it.
 
 What each driver actually gives you:
 
@@ -107,7 +108,7 @@ is not what it claims to be.
 
 ## Start on login
 
-CAM's own *start with Windows* switch controls this:
+CAM's own *start with Windows* switch controls this. Quit CAM first:
 
 ```bash
 flatpak run --command=nzxt-cam-autostart io.github.adds39939.NzxtCamLinux status

@@ -5,18 +5,23 @@ the repo -- it is the record of how CAM was made to work.
 
 ## Why the DLLs are re-linked "native"
 
-Wine builds its PE DLLs with `-Wl,--wine-builtin`. A DLL carrying that marker is
-**rejected** when you ask Wine to load it as `native`, and you get:
+Wine loads builtin DLLs from its own install directory, not from the prefix: the
+copies in `C:\windows\system32` are only version-check placeholders, so dropping a
+patched DLL in there does nothing at all.
+
+The Flatpak sidesteps that entirely — `/app` **is** the install directory, and these
+DLLs are built into it, so they are Wine's own builtins and nothing has to be
+overridden. It is worth recording what the alternative cost, because it is the reason
+this project ships a whole Wine rather than a handful of files: injecting a patched
+DLL into a stock Wine means loading it as `native`, and Wine builds its PE DLLs with
+`-Wl,--wine-builtin`, a marker that makes a `native` load **fail**:
 
 ```
 err:module:import_dll Library propsys.dll ... not found
 ```
 
-So `build-wine-dlls.sh` re-links both without that flag, and `setup.sh` registers
-`HKCU\Software\Wine\DllOverrides` → `native` for each. Dropping a patched DLL into
-`C:\windows\system32` alone does nothing: Wine loads builtins from
-`/usr/lib/wine/x86_64-windows/`, and the copies in the prefix are only version-check
-placeholders.
+so each one had to be re-linked without that flag, copied into the prefix, and
+registered under `HKCU\Software\Wine\DllOverrides` as `native`.
 
 ## The fixes
 
@@ -95,7 +100,7 @@ model("GuestUser", {mode: literal("guest")}).volatile(() => ({isValid:true }))
 Normally you'd click "continue without an account" — impossible when nothing renders.
 
 **Fix:** write `{"mode":"guest"}` to
-`DataStorage/latest/local/currentUser.json` (done by `setup.sh`).
+`DataStorage/latest/local/currentUser.json` (done by `scripts/nzxt-cam-setup`).
 
 ---
 
@@ -396,14 +401,17 @@ off CAM's own UI:
 
 | class | reading | source |
 |---|---|---|
-| `0x2000` | temperature | `nvidia-smi temperature.gpu` |
+| `0x2000` | temperature | `nvmlDeviceGetTemperature` |
 | `0x3000` | fan (RPM) | not served -- only a percentage is available |
-| `0x5000` | power | `nvidia-smi power.draw` |
-| `0xe000` | load | `nvidia-smi utilization.gpu` |
-| `0xf000` | clock | `nvidia-smi clocks.gr` |
+| `0x5000` | power | `nvmlDeviceGetPowerUsage` |
+| `0xe000` | load | `nvmlDeviceGetUtilizationRates` |
+| `0xf000` | clock | `nvmlDeviceGetClockInfo` |
 
 NVIDIA exposes no hwmon node, so the shim cannot read the GPU directly the way it
-reads `k10temp`; the launcher refreshes `nvidia-smi` output into a small file instead.
+reads `k10temp`; the launcher refreshes NVML's readings into a small file instead.
+(These used to come from `nvidia-smi`, which is part of the driver package and is not
+in the Flatpak sandbox. `libnvidia-ml.so.1` is -- it arrives with the runtime's NVIDIA
+extension -- and it is what `nvidia-smi` reads them with itself.)
 
 One piece cannot be fixed at the Wine level, and it is worth being precise about
 why. Each GPU entry `cam_helper` builds carries an SDK-linkage pair: a flag at
@@ -563,10 +571,16 @@ wine ~/.../system32/usbtree-fixup.exe -v
 `hidclass.sys` and `wineusb.sys` are drivers. Wine loads builtin drivers from its
 install directory, not the prefix, and a driver **cannot** be overridden per-prefix --
 marking one `native` makes `winehid` fail with `STATUS_DLL_INIT_FAILED` and breaks all
-HID. That is why `scripts/install-wine-drivers.sh` needs `sudo`, and why it has to be
-re-run after any `wine` package upgrade.
+HID.
+
+This is the constraint the whole shape of this project follows from. Patching the
+system's Wine meant `sudo`, and the next package upgrade silently putting the stock
+drivers back -- the cooler would simply stop being detected. Copying Wine into `$HOME`
+and patching that avoided both, at the cost of a gigabyte and a version-matching
+problem. Building Wine into `/app` and shipping it as a Flatpak is the same idea
+carried to its conclusion: the install directory is part of the application, written
+once at build time, and nothing on the host can reach it.
 
 The patched `explorer.exe` from fix 24 travels with them. It is not a driver and could
 in principle be overridden per prefix, but it is loaded from the same install directory
-for the same reason, so the one script installs all three and `wine-tree.sh` puts all
-three back when the private tree is re-seeded.
+for the same reason.

@@ -8,11 +8,11 @@
 
 [![Release](https://img.shields.io/github/v/release/adds39939/nzxt_cam_linux?style=flat-square&color=51007A&labelColor=1c1c1e)](https://github.com/adds39939/nzxt_cam_linux/releases/latest)
 [![CAM](https://img.shields.io/badge/CAM-4.76.5-51007A?style=flat-square&labelColor=1c1c1e)](https://nzxt.com/camsoftware)
-[![Wine](https://img.shields.io/badge/wine-11.16-51007A?style=flat-square&labelColor=1c1c1e)](WINE_VERSION)
-[![Platform](https://img.shields.io/badge/Linux-51007A?style=flat-square&labelColor=1c1c1e&label=runs%20on)](#install)
+[![Wine](https://img.shields.io/badge/wine-11.16%20(bundled)-51007A?style=flat-square&labelColor=1c1c1e)](WINE_VERSION)
+[![Flatpak](https://img.shields.io/badge/Flatpak-51007A?style=flat-square&labelColor=1c1c1e&label=ships%20as)](#install)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20LGPL--2.1-6b7280?style=flat-square&labelColor=1c1c1e)](#licensing)
 
-[**Install**](#install) · [GPU readings](#gpu-readings) · [Start on login](#start-on-login) · [What works](#what-works) · [Build it yourself](#building-it-yourself) · [Troubleshooting](docs/troubleshooting.md)
+[**Install**](#install) · [The udev rule](#the-one-thing-that-needs-root) · [GPU readings](#gpu-readings) · [Start on login](#start-on-login) · [What works](#what-works) · [Build it yourself](#building-it-yourself) · [Troubleshooting](docs/troubleshooting.md)
 
 </div>
 
@@ -21,6 +21,10 @@
 This repository carries the Wine patches and the sensor plumbing that make NZXT CAM work
 on Linux: the patches so it detects and drives your cooler, and the plumbing so its
 temperatures, clocks and fan speeds are read from Linux itself.
+
+It ships as a Flatpak, which carries its own patched build of Wine. Nothing on the host
+is used to run it — not your `wine`, not `winetricks`, not `cabextract` — so upgrading
+any of them cannot take the cooler away, and there is no Wine version to match.
 
 ![CAM running under Wine](docs/dashboard.png)
 
@@ -41,78 +45,86 @@ Verified on Arch Linux, `wine-11.16`, KDE/Wayland, with an NZXT Kraken Elite V2
 
 ## Install
 
-You need `wine`, `winetricks`, `cabextract`, `curl` and `tar` first:
+Download `nzxt-cam-linux.flatpak` from [the latest
+release](https://github.com/adds39939/nzxt_cam_linux/releases/latest), then:
 
 ```bash
-sudo pacman -S --needed wine winetricks cabextract curl tar   # Arch
-sudo apt install wine winetricks cabextract curl tar          # Debian/Ubuntu
-sudo dnf install wine winetricks cabextract curl tar          # Fedora
+flatpak install --user nzxt-cam-linux.flatpak
 ```
 
-Then:
+Start it from your application menu, or with:
 
 ```bash
-curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/install.sh | bash
+flatpak run io.github.adds39939.NzxtCamLinux
 ```
 
-That downloads NZXT CAM, asks where to put the Wine prefix (default `~/pfx/nzxt_cam`),
-builds the patched prefix and installs a `nzxt-cam` launcher. It offers to install two
-copy of Wine to keep its two patched drivers in, and to start CAM when you log in.
-Nothing needs root.
+The first run downloads NZXT CAM from NZXT — it is proprietary and cannot be
+redistributed here — and installs it into the bundled Wine prefix. That takes a few
+minutes and shows a progress window while it happens.
 
-Start it with:
+### The one thing that needs root
+
+NZXT devices stay owned by `root` until a udev rule says otherwise, and no Flatpak can
+install one. Without it CAM starts, looks entirely normal, and enumerates nothing — the
+Cooling and Lighting pages simply stay empty, which gives no hint at all where to look.
 
 ```bash
-nzxt-cam        # supervised, attached to the current terminal
-nzxt-cam -d     # detached
+sudo curl -Lo /etc/udev/rules.d/60-nzxt-cam.rules \
+  https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/udev/60-nzxt-cam.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb
 ```
 
-The application-menu entry runs that same launcher. Starting CAM any other way skips
-the GPU poller and the device fix-ups it applies, which shows up as GPU readings stuck
-at `n/a` and, after a Wine restart, no cooler.
-
-Nothing is put on your desktop. CAM's installer asks Wine for a desktop shortcut and
-Wine duly makes one; the install deletes it, along with the `.lnk` it was generated
-from so that it does not come back.
-
-Starting CAM while it is already running raises the window it is showing — including
-out of the tray — rather than giving you a second copy of it.
-
-### CAM's own copy of Wine
-
-The install gives CAM its own copy of Wine in `~/.local/share/nzxt-cam/wine`, about
-1 GB. That is what makes upgrading your system `wine` safe — CAM does not use it, so an
-upgrade cannot take the cooler away — and it is why none of this needs `sudo`.
-
-The copy is taken from the Wine you already have, then left alone. To move it on to a
-newer one:
+The app prints the same commands, using the copy of the rule inside the bundle, with:
 
 ```bash
-nzxt-cam-wine-tree create      # take a fresh copy of the current system wine
-nzxt-cam-wine-tree version     # which version CAM is using
+flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --udev-help
 ```
 
-Adding `NZXT_CAM_WINE_TRIM=1` leaves out two Windows components CAM never uses and
-saves about 440 MB.
+Anything that already ships a rule for NZXT's vendor id has covered this — liquidctl
+and OpenRGB both do — which is why the problem does not show up on every machine. The
+launcher checks on every start and says so if an NZXT device is attached and no
+`hidraw` node is readable.
 
-### GPU readings
+### What is in the bundle
 
-These come from the kernel's own `hwmon` and DRM interfaces, so **AMD, Intel and
-nouveau need nothing installed**. CPU readings likewise; `lm_sensors` is **not**
-required.
+Wine, patched and pinned, and nothing of NZXT's. The reason it has to be a whole Wine
+rather than a few files is that two of the patches are to kernel drivers, and those
+cannot be applied per prefix: Wine treats the `.sys` inside a prefix as a marker that
+the driver exists and maps the actual bytes from its own install directory, by name. In
+the Flatpak that directory is `/app`, written at build time, so the patched drivers are
+simply where Wine looks — and the patched user-mode DLLs are its own builtins rather
+than native overrides copied into the prefix.
 
-NVIDIA's proprietary driver is the one exception — it registers no `hwmon` node and
-exposes nothing useful in sysfs — so on that one the readings come from `nvidia-smi`,
-which ships with the driver:
+Everything the app writes lives in one directory,
+`~/.var/app/io.github.adds39939.NzxtCamLinux/`: the Wine prefix, and with it CAM, its
+settings, profiles and logs.
+
+## Uninstall
 
 ```bash
-sudo pacman -S nvidia-utils                  # Arch
-sudo apt install nvidia-utils-<version>      # Debian/Ubuntu, match your driver
-sudo dnf install xorg-x11-drv-nvidia-cuda    # Fedora
+flatpak uninstall --delete-data io.github.adds39939.NzxtCamLinux
 ```
 
-Without it the GPU is still detected and everything else keeps working — its readings
-just stay `n/a`.
+That takes the app, the Wine prefix and CAM's settings with it. Two things it cannot
+remove, because they are outside the sandbox: the udev rule at
+`/etc/udev/rules.d/60-nzxt-cam.rules`, and the start-on-login entry at
+`~/.config/autostart/io.github.adds39939.NzxtCamLinux.desktop` if you turned that on.
+
+## GPU readings
+
+These come from the kernel's own `hwmon` and DRM interfaces, which are visible inside
+the sandbox, so **AMD, Intel and nouveau need nothing installed**. CPU readings
+likewise; `lm_sensors` is **not** required.
+
+NVIDIA's proprietary driver registers no `hwmon` node and exposes nothing useful in
+sysfs, so on that one the readings come from NVML — `libnvidia-ml.so.1` — which arrives
+with the `org.freedesktop.Platform.GL.nvidia-*` extension that Flatpak installs by
+itself when it sees the NVIDIA driver. **So that needs nothing installed either.**
+
+(The native install used to shell out to `nvidia-smi` here and asked you to install
+`nvidia-utils` for it. `nvidia-smi` is part of the driver package and is not in the
+sandbox; NVML is what `nvidia-smi` itself uses, so the numbers are the same ones.)
 
 What each driver actually gives you:
 
@@ -124,59 +136,44 @@ What each driver actually gives you:
 | NVIDIA `nouveau` | ✅ | — | — | ✅ RPM | — |
 
 Intel load needs the perf PMU rather than sysfs, and NVIDIA only reports fan as a
-percentage where CAM's field is RPM, so those stay `n/a` rather than show a number
-that is not what it claims to be. **Only the NVIDIA path has been tested on
-hardware** — the others are built on the documented sysfs interfaces but nobody has
-run them.
+percentage where CAM's field is RPM, so those stay `n/a` rather than show a number that
+is not what it claims to be. **Only the NVIDIA path has been tested on hardware** — the
+others are built on the documented sysfs interfaces but nobody has run them.
 
-### Start on login
+## Start on login
 
-CAM's own *start with Windows* switch controls this, and the installer offers it too.
-Either way you end up with a systemd user unit:
+CAM's own *start with Windows* switch controls this:
 
 ```bash
-nzxt-cam-autostart status     # on or off, and which mechanism
-nzxt-cam-autostart add        # or remove
-systemctl --user status nzxt-cam
+flatpak run --command=nzxt-cam-autostart io.github.adds39939.NzxtCamLinux status
+flatpak run --command=nzxt-cam-autostart io.github.adds39939.NzxtCamLinux add     # or remove
 ```
+
+Either way you end up with an autostart entry at
+`~/.config/autostart/io.github.adds39939.NzxtCamLinux.desktop`. Quit CAM before using
+`add` or `remove`: they write to the prefix's registry, and Wine keeps its server
+socket in `/tmp`, which every `flatpak run` gets a private copy of — so running Wine
+from a second instance would start a second wineserver against a prefix already in
+use. With CAM running, flip the switch inside CAM instead.
 
 The switch inside CAM cannot fire on its own here — it writes to the prefix's `Run`
 key, and nothing starts a Wine session when you log in to Linux — so the launcher
-mirrors it onto the systemd unit, once as it starts and again as it stops. Flip it in
-either place and the other follows; flipping it and logging straight out works too,
+mirrors it onto the autostart entry, once as it starts and again as it stops. Flip it
+in either place and the other follows; flipping it and logging straight out works too,
 because the stop side reads the key after Wine has flushed it to disk.
-
-A user unit rather than an autostart entry: it is ordered after
-`graphical-session.target`, so it starts once the session's `DISPLAY` exists; logging
-out stops CAM rather than leaving it behind driving the cooler; it restarts CAM if it
-dies; and `systemctl --user status nzxt-cam` says what happened when it does not
-start. Sessions that do not drive `graphical-session.target` — plain window managers,
-mostly — get an autostart entry at `~/.config/autostart/nzxt-cam.desktop` instead.
 
 CAM's **Start minimized** setting pairs well with this if you would rather it went
 straight to the tray.
 
-### Display scaling
+## Display scaling
 
-CAM always renders at 100%, so on a scaled display it comes out small. The installer
-matches Wine's DPI to your desktop scale. Override it at any time:
-
-```bash
-NZXT_CAM_SCALE=1.5 nzxt-cam
-```
-
-## Uninstall
+CAM always renders at 100%, so on a scaled display it comes out small. The launcher
+asks the desktop settings portal for your scale and sets Wine's DPI to match. Override
+it for good with:
 
 ```bash
-curl -L https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/uninstall.sh | bash
+flatpak override --user --env=NZXT_CAM_SCALE=1.5 io.github.adds39939.NzxtCamLinux
 ```
-
-That removes the Wine prefix — CAM, its settings, profiles and logs all live inside it
-— along with the launcher, the start-on-login unit, and the menu entries and icons
-Wine created, and CAM's copy of Wine. If an older version of this installer patched
-your system Wine, it offers to put the stock drivers back, which needs `sudo`.
-
-Something not working? See [`docs/troubleshooting.md`](docs/troubleshooting.md).
 
 ## What works
 
@@ -213,43 +210,32 @@ Something not working? See [`docs/troubleshooting.md`](docs/troubleshooting.md).
   settings, so they survive. Set `skipUpdateOnStart` in `settings.json` to pin.
 * `privateMode` is on by default — CAM won't phone home with telemetry.
 * No patch to `app.asar` is needed.
+* Custom LCD images are read from `~/Pictures`, which is the only part of your home
+  directory the sandbox can see. Point CAM at `Z:\home\<you>\Pictures`.
+* Repairing an install without reinstalling the Flatpak:
+  `flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --reinstall`
 * What each Wine patch fixes, and why, is written up in
   [`docs/wine-fixes.md`](docs/wine-fixes.md).
 
 ## Building it yourself
 
-A clone has no `prebuilt/`, so either let `install.sh` pull the release as usual:
-
 ```bash
-git clone https://github.com/adds39939/nzxt_cam_linux
-cd nzxt_cam_linux
-./install.sh                    # fetches the release for the binaries
+flatpak install -y flathub org.freedesktop.Platform//25.08 \
+    org.freedesktop.Sdk//25.08 org.freedesktop.Sdk.Extension.mingw-w64//25.08
+
+flatpak-builder --user --install --force-clean \
+    build-dir flatpak/io.github.adds39939.NzxtCamLinux.yml
 ```
 
-or build them, which needs a PE cross-compiler (`mingw-w64-gcc` on Arch,
-`gcc-mingw-w64-x86-64` on Debian) and Wine's build dependencies (`flex`, `bison`,
-`libusb-1.0-0-dev`):
+That downloads Wine, applies every patch in `patches/`, builds it against the
+mingw-w64 SDK extension, builds the three small Windows tools in `tools/`, and installs
+the result. It takes a while — most of it is Wine. Nothing else has to be installed:
+the runtime and the SDK carry the compilers and the libraries.
 
-```bash
-./scripts/build-wine-dlls.sh    # builds everything into prebuilt/ (takes a while)
-./scripts/setup.sh ~/Downloads/NZXT-CAM-Setup.exe
-```
-
-`setup.sh` makes the private Wine tree and puts the drivers in it, so there is no
-`sudo` step.
-
-Once `prebuilt/` exists, `install.sh` uses your local build rather than the release.
-If CAM is already installed, omit the installer path and `setup.sh` just applies the
-fixes. The prefix defaults to `~/pfx/nzxt_cam`; override with `WINEPREFIX=...`.
-
-Releases are built against the Wine version in [`WINE_VERSION`](WINE_VERSION)
-(currently `11.16`), and `install.sh` warns if yours differs. To rebuild against your
-own:
-
-```bash
-./scripts/build-wine-dlls.sh $(wine --version | sed s/^wine-//)
-./scripts/setup.sh                    # reinstall them
-```
+To build against a different Wine, change the `url` and `sha256` in the manifest's
+`wine` module and put the same version in [`WINE_VERSION`](WINE_VERSION) — CI checks
+the two agree. Whether the patches still apply is the interesting part; they are `-p0`
+patches against the tree as upstream ships it.
 
 None of the Wine changes are CAM-specific. They fix gaps that affect any application
 that enumerates devices through `Windows.Devices.Enumeration`, uses WinUSB, or asks
@@ -257,15 +243,15 @@ cfgmgr32 for a device node's properties.
 
 ## Licensing
 
-This repository's scripts, patches and docs are MIT (see `LICENSE`).
+This repository's scripts, patches, manifest and docs are MIT (see `LICENSE`).
 
-The binaries in each release's `prebuilt/` are compiled from patched Wine sources and
-are therefore **LGPL-2.1-or-later** derivative works of Wine — see `NOTICE` for the
-corresponding-source pointers and rebuild instructions. They are built by CI from the
-patches in this repository, and are not committed here.
+The Wine inside each release's Flatpak bundle is compiled from patched Wine sources and
+is therefore an **LGPL-2.1-or-later** derivative work of Wine — see `NOTICE` for the
+corresponding-source pointers. It is built by CI from the manifest and the patches in
+this repository, and no binaries are committed here.
 
-No NZXT code is redistributed here — get CAM from NZXT. The logo at the top of this
-page puts Tux (by Larry Ewing, made with GIMP) into NZXT's wordmark; it and the
-screenshots below it use NZXT's artwork only to identify the software this project
+No NZXT code is redistributed here — the app downloads CAM from NZXT. The logo at the
+top of this page puts Tux (by Larry Ewing, made with GIMP) into NZXT's wordmark; it and
+the screenshots below it use NZXT's artwork only to identify the software this project
 patches. "NZXT" and "CAM" are NZXT's trademarks; this project is unaffiliated with NZXT
 and not endorsed by it.

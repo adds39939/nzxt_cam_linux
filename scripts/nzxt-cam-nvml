@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""GPU readings from NVIDIA's management library, for the CPUID shim to pick up.
+
+    nzxt-cam-nvml --probe                 exit 0 if NVML is usable
+    nzxt-cam-nvml <output-file> [interval] write a reading every <interval> seconds
+
+The native install shelled out to nvidia-smi for this. nvidia-smi is not in the
+Flatpak sandbox and never will be -- it is part of the driver package, not of
+org.freedesktop.Platform.GL.nvidia, which ships only the libraries. What that
+extension does ship is libnvidia-ml.so.1, on the loader path, so the readings come
+from NVML directly instead. That is also what nvidia-smi itself uses, so the numbers
+are the same ones, without forking a process every two seconds.
+
+Fields, in order: temperature C, load %, clock MHz, fan, power W, fan unit.
+A field is "-" when the driver does not expose it. NVML reports fan speed as a
+percentage and CAM's field is RPM, so the unit is "pct" and the shim drops it rather
+than show a number in the wrong unit.
+"""
+
+import ctypes
+import os
+import sys
+import time
+
+NVML_TEMPERATURE_GPU = 0
+NVML_CLOCK_GRAPHICS = 0
+
+
+class Utilization(ctypes.Structure):
+    _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
+
+
+class NVML:
+    def __init__(self):
+        self.lib = ctypes.CDLL("libnvidia-ml.so.1")
+        if self.lib.nvmlInit_v2() != 0:
+            raise OSError("nvmlInit failed")
+        self.handle = ctypes.c_void_p()
+        if self.lib.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(self.handle)) != 0:
+            raise OSError("no NVML device 0")
+
+    def _uint(self, fn, *args):
+        """Call an NVML getter whose last argument is an unsigned int out-parameter."""
+        out = ctypes.c_uint()
+        if getattr(self.lib, fn)(self.handle, *args, ctypes.byref(out)) != 0:
+            return None
+        return out.value
+
+    def sample(self):
+        temp = self._uint("nvmlDeviceGetTemperature", NVML_TEMPERATURE_GPU)
+        clock = self._uint("nvmlDeviceGetClockInfo", NVML_CLOCK_GRAPHICS)
+        fan = self._uint("nvmlDeviceGetFanSpeed")
+        power_mw = self._uint("nvmlDeviceGetPowerUsage")
+
+        load = None
+        util = Utilization()
+        if self.lib.nvmlDeviceGetUtilizationRates(self.handle, ctypes.byref(util)) == 0:
+            load = util.gpu
+
+        def f(v):
+            return "-" if v is None else str(v)
+
+        power = "-" if power_mw is None else "%.2f" % (power_mw / 1000.0)
+        return "%s, %s, %s, %s, %s, pct\n" % (f(temp), f(load), f(clock), f(fan), power)
+
+
+def main(argv):
+    if "--probe" in argv:
+        try:
+            NVML()
+        except Exception:
+            return 1
+        return 0
+
+    if not argv:
+        sys.stderr.write("usage: nzxt-cam-nvml <output-file> [interval]\n")
+        return 2
+    out = argv[0]
+    interval = float(argv[1]) if len(argv) > 1 else 2.0
+
+    try:
+        nvml = NVML()
+    except Exception as exc:
+        sys.stderr.write("gpu-poll: NVML unavailable (%s)\n" % exc)
+        return 1
+
+    sys.stderr.write("gpu-poll: reading the NVIDIA GPU through NVML\n")
+    tmp = out + ".tmp"
+    while True:
+        try:
+            line = nvml.sample()
+        except Exception:
+            line = None
+        if line:
+            # Written and renamed, so the shim never reads a half-written line.
+            with open(tmp, "w") as fh:
+                fh.write(line)
+            os.replace(tmp, out)
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

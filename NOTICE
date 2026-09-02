@@ -1,27 +1,39 @@
 Third-party components
 ======================
 
-The prebuilt/ directory in each release tarball -- the Wine DLLs, hidclass.sys,
-wineusb.sys and wineusb.so.
+The Flatpak bundle published with each release contains a complete build of
+Wine -- its loader, its libraries, the two patched kernel drivers (hidclass.sys
+and wineusb.sys, with the libusb half wineusb.so) and the patched user-mode
+DLLs, all under /app.
 
-These are NOT original works of this repository, and are not kept in it: they
-are built by .github/workflows/release.yaml and attached to each release. They
-are compiled from the Wine source tree with the patches in patches/ applied,
-and are therefore derivative works of Wine, licensed under the GNU Lesser
-General Public License version 2.1 or later (LGPL-2.1-or-later).
+These are NOT original works of this repository. They are compiled from the
+Wine source tree with the patches in patches/ applied, and are therefore
+derivative works of Wine, licensed under the GNU Lesser General Public License
+version 2.1 or later (LGPL-2.1-or-later).
 
   Upstream source : https://dl.winehq.org/wine/source/
-  Version         : see WINE_VERSION (also prebuilt/BUILT_AGAINST in a release)
+  Version         : see WINE_VERSION
   Modifications   : every patch in patches/
-  Rebuild         : scripts/build-wine-dlls.sh
+  Rebuild         : flatpak-builder with
+                    flatpak/io.github.adds39939.NzxtCamLinux.yml
 
 The complete corresponding source is the upstream Wine tarball for the version
-named in WINE_VERSION, plus the patches in patches/. Together with
-scripts/build-wine-dlls.sh these reproduce the binaries exactly.
+named in WINE_VERSION -- which the manifest downloads by URL and verifies by
+sha256 -- plus the patches in patches/. The manifest is the build recipe, so it
+and this repository together reproduce the binaries exactly.
+
+The bundle also contains cabextract (GPL-2.0-or-later) and winetricks
+(LGPL-2.1-or-later), both built from source by the same manifest, from the URLs
+and revisions it pins.
 
 A copy of the LGPL-2.1 is available at:
   https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
 
 This project ships no NZXT code or assets. NZXT CAM is proprietary software and
-must be downloaded from NZXT. "NZXT" and "CAM" are trademarks of their owner;
-this project is unaffiliated with and unendorsed by NZXT.
+is downloaded from NZXT by the application on first run. "NZXT" and "CAM" are
+trademarks of their owner; this project is unaffiliated with and unendorsed by
+NZXT.
+
+Microsoft's core fonts are likewise not shipped. They are downloaded on first
+run by winetricks, in their original redistributable form, because Chromium
+cannot render without real fonts.

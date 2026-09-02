@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Start NZXT CAM when you log in.
+#
+#   nzxt-cam-autostart          turn it on
+#   nzxt-cam-autostart remove   turn it off again
+#   nzxt-cam-autostart status   whether it is on, and what CAM's own switch says
+#   nzxt-cam-autostart sync     follow CAM's own "start with Windows" switch
+#
+# CAM's own switch cannot do this by itself. It writes to the prefix's
+# HKCU\...\CurrentVersion\Run key, which Wine only acts on when a Wine session starts
+# -- and nothing starts one when you log in to Linux, so the switch never fires.
+# "sync" gives it its meaning back: the launcher runs it as it starts and again as it
+# stops, and whichever way the switch has been left is mirrored onto the Linux side.
+# Both, so that flipping the switch and logging straight out still works -- the stop
+# side reads the registry after the wineserver has flushed it.
+#
+# Why an autostart entry and not the Background portal. RequestBackground is the
+# sanctioned way for a Flatpak to ask for this, but it is an asynchronous Request whose
+# answer arrives on a signal, and on some desktops it prompts the user each time it is
+# called. "sync" runs twice per launch, so that would mean two prompts every time CAM
+# starts. Writing the entry is idempotent and silent, and --filesystem=xdg-config/
+# autostart:create is the permission for exactly this.
+#
+# Why not a systemd user unit, which is what the native install used: there is no
+# systemctl inside the sandbox. What that loses is restart-on-failure and stopping CAM
+# at logout; the session ending takes the whole sandbox with it either way.
+set -uo pipefail
+
+APPID="io.github.adds39939.NzxtCamLinux"
+export WINEPREFIX="${WINEPREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/wineprefix}"
+
+# The host's ~/.config, bound in by --filesystem=xdg-config/autostart:create. NOT
+# $XDG_CONFIG_HOME, which inside a Flatpak is the app's own private config directory
+# and is not read by anything at login.
+ENTRY="$HOME/.config/autostart/$APPID.desktop"
+
+quiet=""
+say() { [ -n "$quiet" ] || echo "$@"; }
+
+# Is a launcher supervising this prefix right now? It holds a flock for as long as it
+# runs, and the lock file lives in the prefix, which every instance shares.
+#
+# This matters because "add" and "remove" write to CAM's Run key with `wine reg`, and
+# every `flatpak run` is a fresh sandbox with its own /tmp -- where Wine keeps its
+# server socket. Running wine from a second instance therefore does not find the
+# running wineserver, it starts a SECOND one against the same prefix, and the two then
+# race to flush the registry. Refuse rather than corrupt it. "sync" is exempt: the
+# launcher runs it from inside its own instance, and it only reads the registry.
+launcher_running() {
+    local lock="$WINEPREFIX/.nzxt-cam.lock"
+    [ -e "$lock" ] || return 1
+    ! ( { exec 9>"$lock"; } 2>/dev/null || exit 0; flock -n 9 ) 2>/dev/null
+}
+
+refuse_while_running() {
+    launcher_running || return 0
+    echo "NZXT CAM is running, so this cannot change its \"start with Windows\" setting." >&2
+    echo "Use that setting inside CAM instead -- the launcher mirrors it here when CAM" >&2
+    echo "starts and again when it stops. Or quit CAM and re-run this." >&2
+    exit 1
+}
+
+install_entry() {
+    mkdir -p "$(dirname "$ENTRY")" 2>/dev/null || {
+        echo "cannot write $ENTRY -- is --filesystem=xdg-config/autostart:create set?" >&2
+        return 1
+    }
+    cat > "$ENTRY" <<ENTRY_EOF || return 1
+[Desktop Entry]
+Type=Application
+Name=NZXT CAM
+Comment=Start NZXT CAM when you log in
+# --startup is the argument CAM puts in the Run key for itself, so a login start looks
+# to it exactly like one on Windows. Whether the window appears or CAM goes straight to
+# the tray is its own "Start minimized" setting, not this flag.
+Exec=flatpak run $APPID --startup
+Icon=$APPID
+Terminal=false
+X-Flatpak=$APPID
+X-GNOME-Autostart-enabled=true
+ENTRY_EOF
+    say "installed $ENTRY"
+}
+
+remove_entry() {
+    [ -f "$ENTRY" ] || return 1
+    rm -f "$ENTRY" || return 1
+    say "removed $ENTRY"
+}
+
+enabled() { [ -f "$ENTRY" ]; }
+
+# ---------------------------------------------------------------- CAM's own switch
+
+# Wine writes the key with its backslashes doubled, so match on the literal text rather
+# than build a regex out of it. Only the Run section counts: the same value name turns
+# up under RunOnce and in the machine hive.
+runkey_set() {
+    [ -f "$WINEPREFIX/user.reg" ] || return 1
+    awk '
+        /^\[/            { in_run = (index($0, "CurrentVersion\\\\Run]") > 0) }
+        in_run && index($0, "\"NZXT.CAM\"=") == 1 { found = 1 }
+        END              { exit !found }
+    ' "$WINEPREFIX/user.reg"
+}
+
+# Write the switch back the other way, so CAM's settings screen agrees with what the
+# session will actually do. Skipped when there is no prefix to write to yet.
+set_runkey() {
+    [ -d "$WINEPREFIX" ] || return 0
+    local key='HKCU\Software\Microsoft\Windows\CurrentVersion\Run'
+    if [ "$1" = on ]; then
+        wine reg add "$key" /v NZXT.CAM /t REG_SZ \
+            /d 'C:\Program Files\NZXT CAM\NZXT CAM.exe --startup' /f >/dev/null 2>&1 || true
+    else
+        wine reg delete "$key" /v NZXT.CAM /f >/dev/null 2>&1 || true
+    fi
+}
+
+case "${1:-add}" in
+    add|--add|"")
+        refuse_while_running
+        install_entry || exit 1
+        set_runkey on
+        ;;
+    remove|--remove|-r)
+        refuse_while_running
+        remove_entry || say "not installed"
+        set_runkey off
+        ;;
+    sync)
+        # The launcher's hook. The registry is the source of truth here, so this never
+        # writes back to it -- it only makes the Linux side match.
+        quiet=1
+        if runkey_set; then
+            enabled || install_entry
+        else
+            enabled && remove_entry || true
+        fi
+        ;;
+    status)
+        if enabled; then echo "start on login: on   ($ENTRY)"
+        else                echo "start on login: off"
+        fi
+        runkey_set && echo "    CAM's own \"start with Windows\" switch: on" \
+                   || echo "    CAM's own \"start with Windows\" switch: off"
+        ;;
+    *)
+        echo "usage: $(basename "$0") [add|remove|status|sync]" >&2
+        exit 1
+        ;;
+esac

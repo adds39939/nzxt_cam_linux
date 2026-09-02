@@ -1,8 +1,12 @@
 *.log
 /build/
+/build-dir/
+/repo/
 /wine-*/
+/.flatpak-builder/
+*.flatpak
 tests/test_descriptor_parse
 
-# Built by scripts/build-wine-dlls.sh and attached to each release by CI --
-# not kept in the repository.
+# Left over from the native install this project used to ship. Nothing builds
+# into it any more -- the Flatpak manifest builds Wine itself.
 /prebuilt/

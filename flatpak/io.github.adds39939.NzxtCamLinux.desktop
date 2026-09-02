@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=NZXT CAM
+GenericName=Cooler and Lighting Control
+Comment=Control NZXT coolers, fans and RGB lighting
+Exec=nzxt-cam %u
+Icon=io.github.adds39939.NzxtCamLinux
+Terminal=false
+Categories=System;Monitor;
+Keywords=NZXT;CAM;Kraken;cooler;RGB;fan;lighting;
+# CAM registers itself as the handler for these on Windows; the launcher passes them
+# straight through, and Electron's single-instance lock hands them to a running copy.
+MimeType=x-scheme-handler/nzxt-cam;

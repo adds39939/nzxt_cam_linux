@@ -1,15 +1,15 @@
-# Build everything in prebuilt/ from source, and the release tarball around it.
+# Build the Flatpak, and the single-file bundle around it.
 #
-# Those binaries are the only part of this repo that cannot be used as-is from a
-# checkout: patched Wine DLLs, two Wine drivers and three small PE tools. Building them
-# here means install.sh can fetch a tarball that already contains them, so nobody needs
-# a Wine source tree or a PE cross-compiler to install CAM.
+# Everything this project ships is built here from source: Wine with the twenty
+# patches applied, the three small Windows tools, and the scripts around them. That is
+# also what makes the LGPL side of it honest -- the manifest plus patches/ IS the
+# corresponding source for the Wine binaries in the bundle.
 #
-# This runs on every pull request into main, so a change that stops the DLLs building --
-# or that adds a script and forgets to put it in the tarball -- is caught while it is
-# still a pull request, rather than when the next release is cut from it. release.yaml
-# calls this same workflow and publishes the artifact it produced, so what ships is
-# exactly what was tested.
+# This runs on every pull request into main, so a patch that no longer applies, or a
+# manifest that has drifted from the patch series, is caught while it is still a pull
+# request rather than when the next release is cut from it. release.yaml calls this
+# same workflow and publishes the artifact it produced, so what ships is exactly what
+# was tested.
 name: build
 
 on:
@@ -18,12 +18,17 @@ on:
   workflow_call:
     outputs:
       artifact:
-        description: Name of the artifact holding the release tarball
+        description: Name of the artifact holding the Flatpak bundle
         value: ${{ jobs.build.outputs.artifact }}
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  APPID: io.github.adds39939.NzxtCamLinux
+  MANIFEST: flatpak/io.github.adds39939.NzxtCamLinux.yml
+  RUNTIME_VERSION: '25.08'
 
 jobs:
   build:
@@ -35,90 +40,135 @@ jobs:
       - uses: actions/checkout@v7
 
       # Nearly all of this repo is shell, and a syntax error in it survives review far
-      # too easily. Cheap to rule out before spending twenty minutes building Wine.
+      # too easily. Cheap to rule out before spending an hour building Wine.
       - name: Check the shell scripts parse
         run: |
           rc=0
-          while IFS= read -r f; do
+          for f in scripts/*; do
+            head -1 "$f" | grep -q 'bin/env bash' || continue
             if bash -n "$f" 2>/dev/null; then
               printf '  ok      %s\n' "$f"
             else
               printf '  SYNTAX  %s\n' "$f"; bash -n "$f" || true; rc=1
             fi
-          done < <(find . -path ./.git -prune -o \( -name '*.sh' -o -name '*.in' \) -print | sort)
+          done
+          python3 -m py_compile scripts/nzxt-cam-nvml && printf '  ok      %s\n' scripts/nzxt-cam-nvml
           [ "$rc" -eq 0 ] || { echo "shell syntax errors above" >&2; exit 1; }
 
-      - name: Install build dependencies
+      # The manifest names each patch by hand. Adding one to patches/ and forgetting to
+      # list it would build a Wine missing that fix, and nothing downstream would say
+      # so -- the cooler would simply not be detected. Check both directions.
+      - name: Check the manifest matches the patch series
+        run: |
+          listed="$(grep -oP '(?<=path: \.\./)patches/\S+' "$MANIFEST" | sort)"
+          onDisk="$(ls patches/*.patch | sort)"
+          if [ "$listed" != "$onDisk" ]; then
+            echo "the manifest and patches/ disagree:" >&2
+            diff <(echo "$listed") <(echo "$onDisk") || true
+            exit 1
+          fi
+          printf '  ok      %d patches, all listed\n' "$(echo "$onDisk" | wc -l)"
+
+          # WINE_VERSION is what the docs quote; the manifest is what actually gets
+          # built. They must not drift.
+          want="$(cat WINE_VERSION)"
+          grep -q "wine-${want}.tar.xz" "$MANIFEST" || {
+            echo "WINE_VERSION says $want but the manifest builds something else" >&2
+            grep -n 'dl.winehq.org' "$MANIFEST" >&2
+            exit 1; }
+          printf '  ok      manifest builds wine-%s\n' "$want"
+
+      - name: Check the desktop entry and AppStream data
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential flex bison \
-            gcc-mingw-w64-x86-64 \
-            libusb-1.0-0-dev \
-            curl xz-utils patch ca-certificates
+          sudo apt-get install -y --no-install-recommends desktop-file-utils appstream
+          desktop-file-validate flatpak/$APPID.desktop
+          appstreamcli validate --no-net --explain flatpak/$APPID.metainfo.xml
 
-      - name: Build everything in prebuilt/
+      - name: Install flatpak and the runtimes
         run: |
-          version="$(cat WINE_VERSION)"
-          echo "building against wine-$version"
-          ./scripts/build-wine-dlls.sh "$version"
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder ccache
+          flatpak remote-add --if-not-exists --user \
+            flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install -y --user --noninteractive flathub \
+            org.freedesktop.Platform//$RUNTIME_VERSION \
+            org.freedesktop.Sdk//$RUNTIME_VERSION \
+            org.freedesktop.Sdk.Extension.mingw-w64//$RUNTIME_VERSION
 
-      - name: Check every artefact was produced
+      # Wine is most of the hour this takes. ccache turns a re-run of an unchanged
+      # build into minutes, and the downloads cache keeps the 45MB Wine tarball and the
+      # winetricks checkout out of every run.
+      - name: Restore the build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .flatpak-builder/ccache
+            .flatpak-builder/downloads
+          key: flatpak-${{ runner.os }}-${{ hashFiles('flatpak/*.yml', 'patches/*.patch') }}
+          restore-keys: flatpak-${{ runner.os }}-
+
+      - name: Build
         run: |
-          missing=0
-          for f in \
-            propsys.dll windows.devices.enumeration.dll cfgmgr32.dll winusb.dll \
-            wintypes.dll setupapi.dll windows.devices.usb.dll \
-            hidclass.sys wineusb.sys wineusb.so explorer.exe \
-            usbtree-fixup.exe gpu-pci-fixup.exe cpuidsdk64_shim.dll \
-            BUILT_AGAINST
-          do
-            if [ -s "prebuilt/$f" ]; then
-              printf '  ok      %s\n' "$f"
-            else
-              printf '  MISSING %s\n' "$f"; missing=1
-            fi
+          flatpak-builder --user --disable-rofiles-fuse --ccache \
+            --repo=repo --force-clean build-dir "$MANIFEST"
+
+      # The manifest is long and most of its mistakes are silent ones: a tool that did
+      # not get installed, a patched driver that did not end up where Wine maps it
+      # from. Look inside the finished build rather than trust that it exited zero.
+      - name: Check the build contains what it must
+        run: |
+          rc=0
+          check() {                       # check <path> <what it is>
+            if [ -s "build-dir/files/$1" ]; then printf '  ok      %s\n' "$1"
+            else printf '  MISSING %s  (%s)\n' "$1" "$2"; rc=1; fi
+          }
+          # The two patched kernel drivers, in the one place Wine maps them from.
+          check lib/wine/x86_64-windows/hidclass.sys "HID interface properties"
+          check lib/wine/x86_64-windows/wineusb.sys  "USB device interface"
+          check lib/wine/x86_64-unix/wineusb.so      "the libusb half of wineusb"
+          check lib/wine/x86_64-windows/explorer.exe "named tray icon windows"
+          # The patched user-mode DLLs, as Wine's own builtins.
+          for d in propsys windows.devices.enumeration windows.devices.usb \
+                   cfgmgr32 winusb wintypes setupapi; do
+            check "lib/wine/x86_64-windows/$d.dll" "patched builtin"
           done
-          [ "$missing" -eq 0 ] || { echo "build did not produce everything" >&2; exit 1; }
+          # The Windows-side tools and the launcher.
+          check share/nzxt-cam/usbtree-fixup.exe    "device tree fixup"
+          check share/nzxt-cam/gpu-pci-fixup.exe    "GPU PCI location"
+          check share/nzxt-cam/cpuidsdk64_shim.dll  "CPU and GPU telemetry"
+          check share/nzxt-cam/60-nzxt-cam.rules    "the udev rule to hand the user"
+          check bin/nzxt-cam                        "launcher"
+          check bin/nzxt-cam-setup                  "first-run install"
+          check bin/nzxt-cam-autostart              "start on login"
+          check bin/nzxt-cam-gpu-poll               "GPU readings"
+          check bin/nzxt-cam-nvml                   "GPU readings on NVIDIA"
+          check bin/wine                            "Wine itself"
+          check bin/winetricks                      "corefonts on first run"
+          check bin/cabextract                      "what winetricks unpacks with"
+          [ "$rc" -eq 0 ] || { echo "the build is incomplete" >&2; exit 1; }
 
-      - name: Assemble the release tarball
+          # A patched DLL that silently fell back to the stock one would pass every
+          # check above. Look for something only the patches introduce. The names are
+          # wide string literals in the binary, so -el (16-bit little-endian) rather
+          # than a plain grep, which finds nothing.
+          if ! strings -el build-dir/files/lib/wine/x86_64-windows/propsys.dll \
+               | grep -q 'System.DeviceInterface.Hid.UsagePage'; then
+            echo "propsys.dll does not contain the patched HID property names" >&2
+            exit 1
+          fi
+          echo "  ok      propsys.dll carries the patched HID properties"
+
+      - name: Build the bundle
         id: pack
         run: |
-          stage="$(mktemp -d)/nzxt-cam-linux"
-          mkdir -p "$stage"
-          # Everything install.sh and the scripts it runs need, plus the sources the
-          # binaries were built from so the tarball can rebuild itself.
-          cp -a install.sh uninstall.sh scripts patches tools prebuilt \
-                WINE_VERSION README.md LICENSE NOTICE "$stage/"
-          tar czf nzxt-cam-linux.tar.gz -C "$(dirname "$stage")" nzxt-cam-linux
-          ls -lh nzxt-cam-linux.tar.gz
+          flatpak build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+            repo nzxt-cam-linux.flatpak "$APPID"
+          ls -lh nzxt-cam-linux.flatpak
           echo "name=nzxt-cam-linux" >> "$GITHUB_OUTPUT"
-
-      # An install is only as good as what the tarball actually contains, and the list
-      # above is hand-written -- so check the unpacked tree the way install.sh will use
-      # it, rather than trusting that cp -a copied the right names.
-      - name: Check the tarball is installable
-        run: |
-          out="$(mktemp -d)"
-          tar xzf nzxt-cam-linux.tar.gz -C "$out" --strip-components=1
-          rc=0
-          for f in install.sh uninstall.sh scripts/setup.sh scripts/nzxt-cam.in \
-                   scripts/wine-tree.sh scripts/install-wine-drivers.sh \
-                   scripts/gpu-poll.sh scripts/desktop-entries.sh scripts/autostart.sh \
-                   prebuilt/BUILT_AGAINST WINE_VERSION
-          do
-            if [ -s "$out/$f" ]; then printf '  ok      %s\n' "$f"
-            else printf '  MISSING %s\n' "$f"; rc=1; fi
-          done
-          # install.sh refuses to run against a tarball missing either of these.
-          for d in patches prebuilt scripts; do
-            [ -d "$out/$d" ] || { printf '  MISSING %s/\n' "$d"; rc=1; }
-          done
-          [ "$rc" -eq 0 ] || { echo "the tarball is incomplete" >&2; exit 1; }
 
       - uses: actions/upload-artifact@v7
         with:
           name: nzxt-cam-linux
-          path: nzxt-cam-linux.tar.gz
+          path: nzxt-cam-linux.flatpak
           if-no-files-found: error
           retention-days: 7

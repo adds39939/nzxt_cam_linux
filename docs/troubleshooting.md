@@ -44,7 +44,14 @@ lsusb | grep 1e71                       # find the device
 ls -l /dev/hidraw*                      # ours should be crw-rw----+, not crw-------
 ```
 
-A Flatpak cannot install a udev rule, so this one step is on you:
+A Flatpak cannot install a udev rule, and cannot be made to. udev runs on the host,
+outside every container, and the sandbox has no root to escalate to -- `sudo` and
+`pkexec` inside it have nothing to escalate *to*. The only mechanism that would work is
+`flatpak-spawn --host`, which requires handing the sandbox permission to run arbitrary
+commands on the host; that is a far worse trade than one command, so this project does
+not ask for it. What the launcher does instead is notice, and hand you the command.
+
+So this one step is on you:
 
 ```bash
 flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --udev-help

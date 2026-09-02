@@ -117,8 +117,12 @@ jobs:
       # Wine is most of the hour this takes. ccache turns a re-run of an unchanged
       # build into minutes, and the downloads cache keeps the 45MB Wine tarball and the
       # winetricks checkout out of every run.
+      # restore/save rather than actions/cache, which only saves in a post step that
+      # is skipped when the job fails. A build this long should not throw away its
+      # ccache every time something later in the run breaks.
       - name: Restore the build cache
-        uses: actions/cache@v4
+        id: cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             .flatpak-builder/ccache
@@ -130,6 +134,15 @@ jobs:
         run: |
           flatpak-builder --user --disable-rofiles-fuse --ccache \
             --repo=repo --force-clean build-dir "$MANIFEST"
+
+      - name: Save the build cache
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .flatpak-builder/ccache
+            .flatpak-builder/downloads
+          key: flatpak-${{ runner.os }}-${{ hashFiles('flatpak/*.yml', 'patches/*.patch') }}
 
       # The manifest is long and most of its mistakes are silent ones: a tool that did
       # not get installed, a patched driver that did not end up where Wine maps it

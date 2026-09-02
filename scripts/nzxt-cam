@@ -110,28 +110,56 @@ fi
 # install one. Without it CAM starts and looks entirely normal while Cooling and
 # Lighting stay empty, which gives no hint at all where to look -- so say so, once,
 # somewhere the user will actually see it.
+# Test the NZXT device's own hidraw node, not just any of them. Asking whether some
+# /dev/hidraw* is readable answers nothing: a keyboard or a game controller carries
+# uaccess on most desktops, so the check passed on every machine that had one and this
+# warning could never fire.
 check_device_access() {
-  local dev found=0
+  local dev node found=0 blocked=0
   for dev in /sys/bus/hid/devices/*; do
-    case "${dev##*/}" in *:1E71:*|*:1e71:*) found=1; break ;; esac
+    case "${dev##*/}" in *:1E71:*|*:1e71:*) ;; *) continue ;; esac
+    found=1
+    for node in "$dev"/hidraw/hidraw*; do
+      [ -e "$node" ] || continue
+      node="/dev/${node##*/}"
+      { [ -r "$node" ] && [ -w "$node" ]; } || blocked=1
+    done
   done
   [ "$found" = 1 ] || return 0          # no NZXT device attached; nothing to say
+  [ "$blocked" = 1 ] || return 0        # its own nodes are reachable
 
-  for dev in /dev/hidraw*; do
-    [ -r "$dev" ] && [ -w "$dev" ] && return 0
-  done
-
+  # This cannot be fixed from in here. udev runs on the host, outside every container,
+  # and the sandbox has no root to escalate to -- the only mechanism that would work is
+  # flatpak-spawn --host, which hands the sandbox the run of the machine. So the most
+  # this can do is make the failure obvious and hand over the exact command, instead of
+  # letting CAM come up looking perfectly healthy with no cooler in it.
+  #
   # Not "cp $TOOLS/...": /app exists only inside the sandbox, and the shell the user
   # runs sudo in does not have it. Pipe the rule out instead.
-  echo "nzxt-cam: an NZXT device is attached but no /dev/hidraw* is accessible." >&2
+  local cmd="flatpak run --command=nzxt-cam-setup $APPID --udev-rule \\
+  | sudo tee /etc/udev/rules.d/60-nzxt-cam.rules >/dev/null
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb"
+
+  echo "nzxt-cam: an NZXT device is attached but its /dev/hidraw* is not accessible." >&2
   echo "nzxt-cam: CAM will start and detect nothing. On the host, run:" >&2
-  echo "nzxt-cam:   flatpak run --command=nzxt-cam-setup $APPID --udev-rule \\" >&2
-  echo "nzxt-cam:     | sudo tee /etc/udev/rules.d/60-nzxt-cam.rules >/dev/null" >&2
-  echo "nzxt-cam:   sudo udevadm control --reload-rules" >&2
-  echo "nzxt-cam:   sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb" >&2
-  notify-send -a "NZXT CAM" -u critical "NZXT CAM cannot reach your device" \
-    "A udev rule is needed. Run:  flatpak run --command=nzxt-cam-setup $APPID --udev-help" \
-    2>/dev/null || true
+  printf 'nzxt-cam:   %s\n' "$cmd" >&2
+
+  # A text-info dialog rather than a warning box: the text can be selected and copied,
+  # which matters when the whole point is to get four lines into a terminal.
+  if command -v zenity >/dev/null 2>&1 &&
+     { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }; then
+    printf '%s\n\n%s\n\n%s\n' \
+      "An NZXT device is attached, but its /dev/hidraw node is owned by root." \
+      "NZXT CAM will start and detect no cooler until a udev rule grants access. This is the one step that cannot be done from inside the Flatpak -- udev runs on the host. Run these four lines in a terminal, then restart CAM:" \
+      "$cmd" |
+    zenity --text-info --title="NZXT CAM needs one step on the host" \
+           --width=760 --height=340 >/dev/null 2>&1 || true
+  else
+    notify-send -a "NZXT CAM" -u critical "NZXT CAM cannot reach your device" \
+      "A udev rule is needed. Run:  flatpak run --command=nzxt-cam-setup $APPID --udev-help" \
+      2>/dev/null || true
+  fi
 }
 check_device_access
 

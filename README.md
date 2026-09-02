@@ -45,28 +45,18 @@ Verified on Arch Linux, `wine-11.16`, KDE/Wayland, with an NZXT Kraken Elite V2
 
 ## Install
 
-Download `nzxt-cam-linux.flatpak` from [the latest
+**1. Install the Flatpak.** Download `nzxt-cam-linux.flatpak` from [the latest
 release](https://github.com/adds39939/nzxt_cam_linux/releases/latest), then:
 
 ```bash
 flatpak install --user nzxt-cam-linux.flatpak
 ```
 
-Start it from your application menu, or with:
-
-```bash
-flatpak run io.github.adds39939.NzxtCamLinux
-```
-
-The first run downloads NZXT CAM from NZXT — it is proprietary and cannot be
-redistributed here — and installs it into the bundled Wine prefix. That takes a few
-minutes and shows a progress window while it happens.
-
-### The one thing that needs root
-
-NZXT devices stay owned by `root` until a udev rule says otherwise, and no Flatpak can
-install one. Without it CAM starts, looks entirely normal, and enumerates nothing — the
-Cooling and Lighting pages simply stay empty, which gives no hint at all where to look.
+**2. Install the udev rule.** This is the one step that needs root, and the one step
+you cannot skip. NZXT devices stay owned by `root` until a udev rule says otherwise,
+and no Flatpak can install one — so without this CAM starts, looks entirely normal, and
+enumerates nothing. The Cooling and Lighting pages simply stay empty, which gives no
+hint at all where to look.
 
 ```bash
 flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --udev-rule \
@@ -76,16 +66,26 @@ sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb
 ```
 
 The rule ships inside the bundle, so that works offline; `udev/60-nzxt-cam.rules` in
-this repository is the same two lines. The app prints these commands itself with:
-
-```bash
-flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --udev-help
-```
+this repository is the same two lines, and the app prints the commands itself with
+`--udev-help` in place of `--udev-rule`.
 
 Anything that already ships a rule for NZXT's vendor id has covered this — liquidctl
-and OpenRGB both do — which is why the problem does not show up on every machine. The
-launcher checks on every start and says so if an NZXT device is attached and no
-`hidraw` node is readable.
+and OpenRGB both do — which is why the problem does not show up on every machine. Check
+whether yours is one of them:
+
+```bash
+grep -rlsE 'ATTRS?\{idVendor\}=="1e71"' /etc/udev/rules.d /usr/lib/udev/rules.d
+```
+
+**3. Start it**, from your application menu or with:
+
+```bash
+flatpak run io.github.adds39939.NzxtCamLinux
+```
+
+The first run downloads NZXT CAM from NZXT — it is proprietary and cannot be
+redistributed here — and installs it into the bundled Wine prefix. That takes a few
+minutes and shows a progress window while it happens.
 
 ### What is in the bundle
 

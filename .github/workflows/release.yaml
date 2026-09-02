@@ -57,6 +57,21 @@ jobs:
             echo "flatpak install --user nzxt-cam-linux.flatpak"
             echo '```'
             echo
+            echo "Then install the udev rule. This is the one step that needs root and"
+            echo "the one step you cannot skip: NZXT devices stay owned by root until a"
+            echo "rule says otherwise, and no Flatpak can install one -- so without it CAM"
+            echo "starts, looks entirely normal, and detects no cooler."
+            echo
+            echo '```bash'
+            echo "flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --udev-rule \\"
+            echo "  | sudo tee /etc/udev/rules.d/60-nzxt-cam.rules >/dev/null"
+            echo "sudo udevadm control --reload-rules"
+            echo "sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb"
+            echo '```'
+            echo
+            echo "(liquidctl and OpenRGB ship a rule for NZXT's vendor id already; if you"
+            echo "use either, this is done.)"
+            echo
             echo "Then start it from your application menu, or with:"
             echo
             echo '```bash'
@@ -64,13 +79,8 @@ jobs:
             echo '```'
             echo
             echo "The first run downloads NZXT CAM from NZXT and installs it into the"
-            echo "bundled Wine prefix. Nothing else is needed on the host -- no wine,"
-            echo "no winetricks, no cabextract -- except one udev rule, which is the"
-            echo "only step that needs root:"
-            echo
-            echo '```bash'
-            echo "flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --udev-help"
-            echo '```'
+            echo "bundled Wine prefix. Nothing else is needed on the host -- no wine, no"
+            echo "winetricks, no cabextract."
             echo
             echo "Remove it again with:"
             echo

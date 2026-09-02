@@ -9,8 +9,11 @@
 [![Release](https://img.shields.io/github/v/release/adds39939/nzxt_cam_linux?style=flat-square&color=51007A&labelColor=1c1c1e)](https://github.com/adds39939/nzxt_cam_linux/releases/latest)
 [![CAM](https://img.shields.io/badge/CAM-4.76.5-51007A?style=flat-square&labelColor=1c1c1e)](https://nzxt.com/camsoftware)
 [![Wine](https://img.shields.io/badge/wine-11.16%20(bundled)-51007A?style=flat-square&labelColor=1c1c1e)](WINE_VERSION)
-[![Flatpak](https://img.shields.io/badge/Flatpak-51007A?style=flat-square&labelColor=1c1c1e&label=ships%20as)](#install)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20LGPL--2.1-6b7280?style=flat-square&labelColor=1c1c1e)](#licensing)
+
+<br>
+
+[![Download](https://img.shields.io/badge/Download-nzxt--cam--linux.flatpak-51007A?style=for-the-badge&labelColor=1c1c1e&logo=flatpak&logoColor=white)](https://github.com/adds39939/nzxt_cam_linux/releases/latest)
 
 [**Install**](#install) · [The udev rule](#the-one-thing-that-needs-root) · [GPU readings](#gpu-readings) · [Start on login](#start-on-login) · [What works](#what-works) · [Build it yourself](#building-it-yourself) · [Troubleshooting](docs/troubleshooting.md)
 
@@ -22,9 +25,7 @@ This repository carries the Wine patches and the sensor plumbing that make NZXT 
 on Linux: the patches so it detects and drives your cooler, and the plumbing so its
 temperatures, clocks and fan speeds are read from Linux itself.
 
-It ships as a Flatpak, which carries its own patched build of Wine. Nothing on the host
-is used to run it — not your `wine`, not `winetricks`, not `cabextract` — so upgrading
-any of them cannot take the cooler away, and there is no Wine version to match.
+It is available as a Flatpak, with Wine bundled.
 
 ![CAM running under Wine](docs/dashboard.png)
 
@@ -87,17 +88,9 @@ The first run downloads NZXT CAM from NZXT — it is proprietary and cannot be
 redistributed here — and installs it into the bundled Wine prefix. That takes a few
 minutes and shows a progress window while it happens.
 
-### What is in the bundle
+### Where everything lives
 
-Wine, patched and pinned, and nothing of NZXT's. The reason it has to be a whole Wine
-rather than a few files is that two of the patches are to kernel drivers, and those
-cannot be applied per prefix: Wine treats the `.sys` inside a prefix as a marker that
-the driver exists and maps the actual bytes from its own install directory, by name. In
-the Flatpak that directory is `/app`, written at build time, so the patched drivers are
-simply where Wine looks — and the patched user-mode DLLs are its own builtins rather
-than native overrides copied into the prefix.
-
-Everything the app writes lives in one directory,
+Everything the app writes is in one directory,
 `~/.var/app/io.github.adds39939.NzxtCamLinux/`: the Wine prefix, and with it CAM, its
 settings, profiles and logs.
 
@@ -122,10 +115,6 @@ NVIDIA's proprietary driver registers no `hwmon` node and exposes nothing useful
 sysfs, so on that one the readings come from NVML — `libnvidia-ml.so.1` — which arrives
 with the `org.freedesktop.Platform.GL.nvidia-*` extension that Flatpak installs by
 itself when it sees the NVIDIA driver. **So that needs nothing installed either.**
-
-(The native install used to shell out to `nvidia-smi` here and asked you to install
-`nvidia-utils` for it. `nvidia-smi` is part of the driver package and is not in the
-sandbox; NVML is what `nvidia-smi` itself uses, so the numbers are the same ones.)
 
 What each driver actually gives you:
 
@@ -169,42 +158,29 @@ straight to the tray.
 ## Display scaling
 
 CAM always renders at 100%, so on a scaled display it comes out small. The launcher
-reads the DPI your desktop publishes to its X clients (the `Xft.dpi` X resource — 139
-for a 1.45 scale) and sets Wine's DPI to match, which Chromium then reports as its
-device pixel ratio.
-
-Not the desktop settings portal: its `scaling-factor` key is an integer, so KDE answers
-`1` for a display at 125% or 145% and CAM comes out at 100% again. The portal is only
-the fallback for a desktop that sets no `Xft.dpi`.
-
-Override the lot with:
+matches Wine's DPI to your desktop's automatically. If it guesses wrong, set it:
 
 ```bash
 flatpak override --user --env=NZXT_CAM_SCALE=1.5 io.github.adds39939.NzxtCamLinux
 ```
 
-Check what it worked out with:
-
 ```bash
-flatpak run --command=nzxt-cam-xdpi io.github.adds39939.NzxtCamLinux   # prints the DPI
+flatpak run --command=nzxt-cam-xdpi io.github.adds39939.NzxtCamLinux   # what it detected
 ```
 
 ## The system tray on KDE
 
-CAM shows two tray entries on Plasma, and only one of them is CAM. The other is Plasma's
-*Background Apps* indicator: `xdg-desktop-portal` reports every sandboxed application
-running without a visible window, and CAM lives in the tray, so it qualifies. Nothing
-here creates it and nothing here can suppress it.
-
-Keep whichever you prefer. To drop Wine's icon and leave Plasma's:
+CAM shows two tray entries on Plasma. Only one is CAM's; the other is Plasma's
+*Background Apps* indicator, which it shows for any Flatpak running in the background.
+Keep whichever you prefer. To drop CAM's and leave Plasma's:
 
 ```bash
 flatpak override --user --env=NZXT_CAM_TRAY=0 io.github.adds39939.NzxtCamLinux
 ```
 
-To keep Wine's — the one with CAM's own menu on it — set the other entry to *Never show
-(disabled)* in *Configure System Tray → Entries*. See
-[`docs/troubleshooting.md`](docs/troubleshooting.md) for how to tell them apart.
+To keep CAM's — it is the one with CAM's menu on it — set the other to *Never show
+(disabled)* in *Configure System Tray → Entries*.
+[`docs/troubleshooting.md`](docs/troubleshooting.md) has how to tell them apart.
 
 ## What works
 

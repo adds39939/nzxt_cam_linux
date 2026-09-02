@@ -149,12 +149,11 @@ sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb"
   # which matters when the whole point is to get four lines into a terminal.
   if command -v zenity >/dev/null 2>&1 &&
      { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }; then
-    printf '%s\n\n%s\n\n%s\n' \
-      "An NZXT device is attached, but its /dev/hidraw node is owned by root." \
-      "NZXT CAM will start and detect no cooler until a udev rule grants access. This is the one step that cannot be done from inside the Flatpak -- udev runs on the host. Run these four lines in a terminal, then restart CAM:" \
+    printf '%s\n\n%s\n' \
+      "NZXT CAM cannot reach your cooler. Run this in a terminal, then restart CAM:" \
       "$cmd" |
     zenity --text-info --title="NZXT CAM needs one step on the host" \
-           --width=760 --height=340 >/dev/null 2>&1 || true
+           --width=720 --height=230 >/dev/null 2>&1 || true
   else
     notify-send -a "NZXT CAM" -u critical "NZXT CAM cannot reach your device" \
       "A udev rule is needed. Run:  flatpak run --command=nzxt-cam-setup $APPID --udev-help" \

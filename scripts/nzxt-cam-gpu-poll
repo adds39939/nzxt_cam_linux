@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Write GPU readings to a file for the CPUID shim to pick up, once every INTERVAL.
 #
-#   scripts/gpu-poll.sh <output-file> [interval-seconds]
+#   nzxt-cam-gpu-poll <output-file> [interval-seconds]
 #
 # Fields, in order:  temperature C, load %, clock MHz, fan, power W, fan unit
 # A field is "-" when the driver does not expose it. The fan unit is "rpm" or "pct":
 # CAM's field is RPM, so the shim only reports a fan speed when it is really RPM.
 #
-# The kernel's hwmon interface covers AMD and Intel, and nouveau, without any extra
-# package. NVIDIA's proprietary driver is the exception -- it registers no hwmon node
-# and exposes nothing useful in sysfs -- so that one alone falls back to nvidia-smi.
+# The kernel's hwmon interface covers AMD and Intel, and nouveau, and /sys is bound
+# into the sandbox, so those need nothing. NVIDIA's proprietary driver is the exception
+# -- it registers no hwmon node and exposes nothing useful in sysfs -- so that one
+# alone falls back to NVML, which the runtime's NVIDIA extension ships as
+# libnvidia-ml.so.1. (The native install used nvidia-smi here; that is part of the
+# driver package and is not in the sandbox.)
 set -uo pipefail
 
-OUT="${1:?usage: gpu-poll.sh <output-file> [interval]}"
+OUT="${1:?usage: nzxt-cam-gpu-poll <output-file> [interval]}"
 INTERVAL="${2:-2}"
 
 read_first() {                      # read_first <file>... -> first that exists
@@ -91,31 +94,22 @@ sample_sysfs() {
     printf '%s, %s, %s, %s, %s, %s\n' "$temp" "$load" "$clock" "$fan" "$power" "$unit"
 }
 
-sample_nvidia_smi() {
-    local line
-    line="$(nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,clocks.gr,fan.speed,power.draw \
-                       --format=csv,noheader,nounits 2>/dev/null | head -1)"
-    [ -n "$line" ] || return 1
-    # nvidia-smi reports fan as a percentage, which is not what CAM's field wants.
-    printf '%s, pct\n' "$line"
-}
-
 # Decide once which source to use, rather than probing every two seconds.
-SOURCE=""
-if [ -n "$GPU_HWMON" ] || [ -r "${GPU_DEV:-/nonexistent}/gpu_busy_percent" ]; then
-    SOURCE="sysfs"
-elif command -v nvidia-smi >/dev/null 2>&1; then
-    SOURCE="nvidia-smi"
+if [ -z "$GPU_HWMON" ] && [ ! -r "${GPU_DEV:-/nonexistent}/gpu_busy_percent" ]; then
+    # Nothing in sysfs. On NVIDIA's proprietary driver that is expected rather than a
+    # failure, so hand over to the NVML poller, which keeps writing the same file in
+    # the same format for the rest of the session.
+    if nzxt-cam-nvml --probe 2>/dev/null; then
+        exec nzxt-cam-nvml "$OUT" "$INTERVAL"
+    fi
+    echo "gpu-poll: no GPU telemetry available" >&2
+    exit 0
 fi
 
-case "${SOURCE:-none}" in
-    sysfs)      echo "gpu-poll: reading $GPU_DEV via sysfs" >&2 ;;
-    nvidia-smi) echo "gpu-poll: no GPU hwmon, using nvidia-smi" >&2 ;;
-    *)          echo "gpu-poll: no GPU telemetry available" >&2; exit 0 ;;
-esac
+echo "gpu-poll: reading $GPU_DEV via sysfs" >&2
 
 while :; do
-    if [ "$SOURCE" = "sysfs" ]; then sample_sysfs; else sample_nvidia_smi; fi > "$OUT.tmp" 2>/dev/null
+    sample_sysfs > "$OUT.tmp" 2>/dev/null
     [ -s "$OUT.tmp" ] && mv -f "$OUT.tmp" "$OUT"
     sleep "$INTERVAL"
 done

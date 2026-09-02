@@ -1,0 +1,15 @@
+# NZXT devices -- grant the logged-in seat user access, so Wine's winebus can
+# enumerate them and hand them to NZXT CAM. Installed by nzxt_cam_linux.
+#
+# Without this the devices stay owned by root, and CAM starts, looks entirely normal,
+# and enumerates nothing -- the Cooling and Lighting pages simply stay empty. A Flatpak
+# cannot install a udev rule, so this is the one step that needs root on the host:
+#
+#   sudo cp 60-nzxt-cam.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb
+#
+# Anything that already ships a rule for NZXT's vendor id has covered this (liquidctl
+# and OpenRGB both do), which is why the problem does not show up on every machine.
+KERNEL=="hidraw*", ATTRS{idVendor}=="1e71", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", MODE="0660", TAG+="uaccess"

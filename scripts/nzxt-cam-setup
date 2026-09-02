@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+# First run: build the prefix and install NZXT CAM into it.
+#
+#   nzxt-cam-setup              install CAM if it is not there yet
+#   nzxt-cam-setup --reinstall  download and run the installer again over the top
+#   nzxt-cam-setup --udev-help  explain the udev rule the host needs, and stop
+#   nzxt-cam-setup --udev-rule  print just the rule, for piping into sudo tee
+#
+# The launcher calls this by itself the first time it runs, so this exists as a
+# separate command mainly for repairing an install:
+#   flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --reinstall
+#
+# Wine is already patched and already in /app. Everything this used to do to a Wine
+# tree -- copy it, put two kernel drivers in it, overwrite seven DLLs in the prefix and
+# register them as native overrides -- is gone. What is left is the part that is
+# genuinely per-prefix: fonts, CAM itself, the CPUID shim and two settings files.
+set -uo pipefail
+
+CAM_URL="${CAM_URL:-https://nzxt-app.nzxt.com/NZXT-CAM-Setup.exe}"
+export WINEPREFIX="${WINEPREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/wineprefix}"
+CAMDIR="$WINEPREFIX/drive_c/Program Files/NZXT CAM"
+TOOLS="${NZXT_CAM_TOOLS:-/app/share/nzxt-cam}"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/nzxt-cam"
+APPID="io.github.adds39939.NzxtCamLinux"
+
+say() { printf '\n==> %s\n' "$*"; }
+die() { printf 'ERROR: %s\n' "$*" >&2; step_done; exit 1; }
+
+# Note that the commands below have to name the rule by piping it out of the sandbox,
+# not by copying it out of /app: /app exists only in here, and the shell the user runs
+# sudo in is on the host, where that path is nothing at all.
+udev_help() {
+    cat <<HELP
+NZXT devices stay owned by root until a udev rule says otherwise, and Wine cannot open
+one without it -- CAM runs, and detects no cooler. A Flatpak cannot install the rule
+for you, so this is the one step that needs root on the host.
+
+Run this in a terminal on the host:
+
+  flatpak run --command=nzxt-cam-setup $APPID --udev-rule \\
+    | sudo tee /etc/udev/rules.d/60-nzxt-cam.rules >/dev/null
+  sudo udevadm control --reload-rules
+  sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb
+
+The rule itself is two lines, and is also in the repository at udev/60-nzxt-cam.rules:
+
+$(sed 's/^/  /' "$TOOLS/60-nzxt-cam.rules" 2>/dev/null | grep -v '^  #' | grep -v '^  $')
+
+Anything that already ships a rule for NZXT's vendor id has covered this -- liquidctl
+and OpenRGB both do -- which is why the problem does not show up on every machine.
+HELP
+}
+
+REINSTALL=0
+for a in "$@"; do
+    case "$a" in
+        --udev-help) udev_help; exit 0 ;;
+        --udev-rule) cat "$TOOLS/60-nzxt-cam.rules"; exit 0 ;;
+        --reinstall) REINSTALL=1 ;;
+        *) echo "usage: $(basename "$0") [--reinstall|--udev-help|--udev-rule]" >&2; exit 1 ;;
+    esac
+done
+
+if [ -d "$CAMDIR" ] && [ "$REINSTALL" = 0 ]; then
+    say "CAM is already installed in $WINEPREFIX"
+    exit 0
+fi
+
+# ---------------------------------------------------------------- progress UI
+
+# This runs before there is any window to look at and takes several minutes, so say
+# what is happening. zenity is in the runtime; when there is no display to put it on
+# (a --command= run from a terminal) the messages just go to stdout.
+PROGRESS_FIFO=""
+progress_pid=""
+step_start() {
+    command -v zenity >/dev/null 2>&1 || return 0
+    { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; } || return 0
+    PROGRESS_FIFO="$(mktemp -u)"
+    mkfifo "$PROGRESS_FIFO" 2>/dev/null || { PROGRESS_FIFO=""; return 0; }
+    zenity --progress --pulsate --auto-close --no-cancel \
+           --title="NZXT CAM" --width=420 \
+           --text="Setting up NZXT CAM..." < "$PROGRESS_FIFO" >/dev/null 2>&1 &
+    progress_pid=$!
+    # Read-write, not write-only: opening a FIFO write-only blocks until a reader
+    # arrives, so a zenity that failed to start would hang the install here.
+    exec 8<>"$PROGRESS_FIFO"
+}
+step() {
+    say "$*"
+    [ -n "$PROGRESS_FIFO" ] && printf '# %s\n' "$*" >&8 2>/dev/null
+    return 0
+}
+step_done() {
+    [ -n "$PROGRESS_FIFO" ] || return 0
+    printf '100\n' >&8 2>/dev/null
+    exec 8>&- 2>/dev/null
+    rm -f "$PROGRESS_FIFO"
+    PROGRESS_FIFO=""
+    # --auto-close should have taken the dialog down on the 100 above; give it a moment
+    # and then make sure, rather than let a stuck zenity hold the install open.
+    if [ -n "$progress_pid" ]; then
+        sleep 1
+        kill "$progress_pid" 2>/dev/null
+        wait "$progress_pid" 2>/dev/null
+        progress_pid=""
+    fi
+    return 0
+}
+trap 'step_done' EXIT
+
+# Let Wine finish what it is doing, but never wait indefinitely: "wineserver -w" waits
+# for every process in the prefix to exit, so anything holding a window open -- CAM
+# itself, most likely -- blocks the install for good. Give it a moment, then stop it.
+settle() { timeout 30 wineserver -w 2>/dev/null || wineserver -k >/dev/null 2>&1 || true; }
+
+step_start
+
+# ----------------------------------------------------------------- the prefix
+
+step "Creating the Wine prefix"
+mkdir -p "$WINEPREFIX"
+WINEARCH=win64 wineboot -i >/dev/null 2>&1 || true
+settle
+
+# --- THE critical fix: without real fonts Chromium renders zero-height text and the
+# --- renderer dies on a NOTREACHED. Everything else is secondary.
+#
+# Downloaded rather than bundled: Microsoft's licence allows redistributing these in
+# their original .exe form only, so they cannot ship inside the Flatpak.
+if [ ! -f "$WINEPREFIX/drive_c/windows/Fonts/arial.ttf" ]; then
+    step "Installing corefonts (required -- CAM will not render without them)"
+    # Not silenced: when this fails it is the only thing standing between the user and
+    # an app that starts to a blank window, and winetricks says why. The launcher sends
+    # all of this to the prefix log.
+    winetricks -q corefonts ||
+        die "could not install corefonts -- see the output above, then try --reinstall"
+    [ -f "$WINEPREFIX/drive_c/windows/Fonts/arial.ttf" ] ||
+        die "corefonts did not install; CAM would start to a blank window"
+    settle
+fi
+
+# -------------------------------------------------------------- the installer
+
+mkdir -p "$CACHE"
+INSTALLER="$CACHE/NZXT-CAM-Setup.exe"
+
+step "Downloading NZXT CAM from nzxt.com"
+curl -fL --retry 3 -o "$INSTALLER.part" "$CAM_URL" || die "download failed: $CAM_URL"
+[ -s "$INSTALLER.part" ] || die "downloaded installer is empty"
+case "$(head -c2 "$INSTALLER.part")" in
+    MZ) ;;
+    *)  rm -f "$INSTALLER.part"; die "that is not a Windows executable -- did NZXT's URL change?" ;;
+esac
+mv -f "$INSTALLER.part" "$INSTALLER"
+
+step "Running the NZXT CAM installer (a few minutes)"
+# CAM's installer launches the app as its last act, so "wineserver -w" -- wait for the
+# prefix to go quiet -- never returns: it sits there until you close a window you did
+# not ask for. Run the installer in the background instead and stop the prefix once CAM
+# is on disk, whether the installer exited or is still holding it.
+wine "$INSTALLER" >/dev/null 2>&1 &
+installer=$!
+
+waited=0
+while [ "$waited" -lt 900 ]; do
+    if [ -f "$CAMDIR/NZXT CAM.exe" ]; then
+        # Installed. Done as soon as the installer lets go, or as soon as it has
+        # launched CAM itself -- either way there is nothing left to wait for.
+        kill -0 "$installer" 2>/dev/null || break
+        pgrep -f 'NZXT CAM\.exe' >/dev/null 2>&1 && break
+    elif ! kill -0 "$installer" 2>/dev/null; then
+        break                                  # exited without installing anything
+    fi
+    sleep 2
+    waited=$((waited + 2))
+done
+
+sleep 3                                        # let the last writes land
+wineserver -k >/dev/null 2>&1 || true
+wait "$installer" 2>/dev/null || true
+
+[ -d "$CAMDIR" ] || die "the installer did not put CAM in $CAMDIR"
+
+# --------------------------------------------------------------------- the shim
+
+# CAM reads CPU/GPU telemetry through CPUID's cpuidsdk64.dll, which needs a ring-0
+# driver that cannot work under Wine. Keep the genuine SDK next to the shim, which
+# forwards to it and fills in the readings from Linux. See tools/cpuid-shim.
+step "Installing the CPUID SDK shim (CPU temperature and clocks)"
+CPUID="$CAMDIR/resources/app.asar.unpacked/node_modules/@nzxt/cam-core/dist/common/cpuid"
+if [ -d "$CPUID" ] && [ -f "$TOOLS/cpuidsdk64_shim.dll" ]; then
+    # Only move the original aside once, so re-running never shims the shim.
+    if [ ! -f "$CPUID/cpuidsdk64_real.dll" ]; then
+        cp "$CPUID/cpuidsdk64.dll" "$CPUID/cpuidsdk64_real.dll"
+    fi
+    cp "$TOOLS/cpuidsdk64_shim.dll" "$CPUID/cpuidsdk64.dll"
+else
+    echo "    WARNING: cpuid directory not found; CPU temperature will read n/a" >&2
+fi
+
+step "Setting guest mode (skips the sign-in screen)"
+for user in "$WINEPREFIX"/drive_c/users/*/; do
+    case "${user%/}" in */Public) continue ;; esac
+    DS="$user/AppData/Roaming/NZXT CAM/DataStorage/latest/local"
+    mkdir -p "$DS"
+    [ -f "$DS/currentUser.json" ] || printf '{"mode":"guest"}\n' > "$DS/currentUser.json"
+    printf '{"pathname":"/"}\n' > "$DS/router.json"
+done
+
+step_done
+say "Done -- starting CAM"
+notify-send -a "NZXT CAM" "NZXT CAM is installed" "Starting up." 2>/dev/null || true

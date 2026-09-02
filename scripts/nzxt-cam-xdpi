@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Print the display DPI the desktop has set, or nothing if it has not set one.
+
+CAM always renders at 100%, so on a scaled display it comes out small, and the only
+lever Wine gives us is HKCU\\Control Panel\\Desktop\\LogPixels -- Wine 11 reads no X
+resource of its own. So the launcher has to work out the DPI and write it there.
+
+Getting that number inside the sandbox is the awkward part. kscreen-doctor, xrdb and
+xprop are all outside it, and the desktop settings portal is no help on the desktop
+that needs it most: KDE answers org.gnome.desktop.interface/scaling-factor with the
+integer 1 whether the display is at 100% or 145%, because that key cannot express a
+fractional scale. Asking it on a 125%/145% dual-head KDE session returns 1, which is
+how CAM ended up rendering at 100% again.
+
+What KDE does set, for the benefit of every XWayland client, is the Xft.dpi X
+resource -- 139 for a 1.45 scale. That is a real fractional signal, it is what other
+X applications scale by, and it is readable through the X socket the app already has.
+GNOME sets it too. So read it from the X server's resource manager string, which is
+three calls into libX11 and needs nothing installed.
+"""
+
+import ctypes
+import sys
+
+
+def xft_dpi():
+    xlib = ctypes.CDLL("libX11.so.6")
+    xlib.XOpenDisplay.restype = ctypes.c_void_p
+    xlib.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    xlib.XResourceManagerString.restype = ctypes.c_char_p
+    xlib.XResourceManagerString.argtypes = [ctypes.c_void_p]
+    xlib.XCloseDisplay.argtypes = [ctypes.c_void_p]
+
+    display = xlib.XOpenDisplay(None)
+    if not display:
+        return None
+    try:
+        resources = xlib.XResourceManagerString(display) or b""
+    finally:
+        xlib.XCloseDisplay(display)
+
+    for line in resources.decode("utf-8", "replace").splitlines():
+        name, _, value = line.partition(":")
+        if name.strip().lower() != "xft.dpi":
+            continue
+        try:
+            # Written as an integer in practice, but accept "139.0" as well.
+            return int(round(float(value.strip())))
+        except ValueError:
+            return None
+    return None
+
+
+def main():
+    try:
+        dpi = xft_dpi()
+    except Exception:
+        return 1
+    # Below 96 is not a scale anyone asked for, and 96 is the default the launcher
+    # would write anyway -- say nothing rather than have it bounce the wineserver.
+    if dpi is None or dpi <= 96 or dpi > 480:
+        return 1
+    print(dpi)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

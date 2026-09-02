@@ -1,0 +1,267 @@
+# NZXT CAM on Linux, as a Flatpak.
+#
+# The whole point of this manifest is that /app IS the Wine install directory. The two
+# patched kernel drivers (hidclass.sys, wineusb.sys) cannot be applied per prefix --
+# Wine treats the .sys inside a prefix as a marker that the driver exists and maps the
+# bytes from its own install directory, by name -- which used to mean copying the
+# host's Wine into $HOME and patching that. Here they are simply what `make install`
+# put in /app/lib/wine/x86_64-windows, so:
+#
+#   * the patched user-mode DLLs are Wine's own builtins. No relinking them without
+#     -Wl,--wine-builtin, no copying them into the prefix, no native DllOverrides.
+#   * there is one Wine version, pinned and shipped, so no mismatch gate.
+#   * nothing on the host is needed to build or run it -- no wine, no winetricks,
+#     no cabextract, and no root.
+#
+# Build it with:
+#   flatpak install -y flathub org.freedesktop.Platform//25.08 \
+#       org.freedesktop.Sdk//25.08 org.freedesktop.Sdk.Extension.mingw-w64//25.08
+#   flatpak-builder --user --install --force-clean build flatpak/io.github.adds39939.NzxtCamLinux.yml
+#
+# Wine is LGPL-2.1-or-later; this manifest plus patches/ is its corresponding source.
+# NZXT CAM itself is not redistributed -- it is downloaded from NZXT on first run.
+id: io.github.adds39939.NzxtCamLinux
+runtime: org.freedesktop.Platform
+runtime-version: &runtime-version '25.08'
+sdk: org.freedesktop.Sdk
+command: nzxt-cam
+
+# The PE side of Wine, and the three small Windows tools in tools/, need a mingw-w64
+# cross compiler. Flathub publishes one as an SDK extension, so nothing has to be
+# bootstrapped here.
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.mingw-w64
+
+build-options:
+  append-path: /usr/lib/sdk/mingw-w64/bin
+
+finish-args:
+  # CAM is an Electron app under Wine, and Wine's system tray is XEmbed over X11.
+  # Wayland is offered as well for Wine's own Wayland driver; X11 is what gets used
+  # while the tray icon matters.
+  - --socket=x11
+  - --socket=wayland
+  - --share=ipc
+  # The cooler is reached two ways: /dev/hidraw* for HID enumeration and /dev/bus/usb
+  # for the WinUSB/libusb path that drives the LCD. --device=all is the only permission
+  # that covers hidraw; there is no narrower one.
+  - --device=all
+  # Downloading CAM on first run, CAM's own updates, and winetricks fetching corefonts.
+  - --share=network
+  # Custom LCD images come from the user's pictures.
+  - --filesystem=xdg-pictures
+  # Start on login is an autostart entry written here. See scripts/nzxt-cam-autostart
+  # for why the Background portal is not used for it.
+  - --filesystem=xdg-config/autostart:create
+  # notify-send, for the first-run install and for telling the user when the udev rule
+  # is missing -- the one failure that otherwise looks like CAM working perfectly and
+  # finding no hardware.
+  - --talk-name=org.freedesktop.Notifications
+  # Wine wants ptrace for its own processes. Flathub's own Wine sets this.
+  - --allow=devel
+  # Without this the sandbox's seccomp filter refuses to start a 32-bit process, and
+  # Wine's WoW64 half is dead weight: `wine .../i386-windows/cmd.exe` answers
+  # "Application could not be started", wineboot never runs the inf's Wow64Install
+  # section, C:\windows\syswow64 stays empty, and winetricks then fails to register a
+  # single font. Everything about that failure points at the Wine build rather than at
+  # a missing permission, which is what makes it worth a comment this long.
+  - --allow=multiarch
+  - --env=WINEPREFIX=/var/data/wineprefix
+  # Gecko and Mono are Wine's IE and .NET packages. CAM is Electron and uses neither,
+  # so they are not bundled -- and Wine is told not to go looking, or it offers to
+  # download them in a dialog every time it touches the prefix.
+  - --env=WINEDLLOVERRIDES=mscoree,mshtml=d
+
+modules:
+  - name: wine
+    config-opts:
+      # New WoW64: 32-bit PE files, 64-bit Unix side, and no 32-bit Unix libraries
+      # anywhere -- so this needs the i686 cross compiler from the same SDK extension
+      # and nothing else. It is exactly the shape of the Wine CAM was developed and
+      # verified against (i386-windows + x86_64-windows + x86_64-unix, and no
+      # i386-unix), which is reason enough on its own.
+      #
+      # A pure --enable-win64 build does not work here. NZXT's installer and CAM are
+      # both x86-64, so it looks like it should, but there is then no C:\windows\
+      # syswow64 -- and winetricks registers every font it installs by running
+      # syswow64\regedit.exe. corefonts aborts on the first one, and without fonts
+      # Chromium renders zero-height text and CAM's renderer dies on a NOTREACHED.
+      - --enable-archs=i386,x86_64
+      - --disable-tests
+      # Wine's menu builder writes .desktop files and icons for everything a Windows
+      # installer asks for. Inside the sandbox they would go nowhere useful, and on
+      # the native install they were a running battle -- CAM's installer asks for a
+      # desktop shortcut, Wine makes one, and it comes back every time Wine reprocesses
+      # the .lnk. Not building it is the end of that.
+      - --disable-winemenubuilder
+      # No value: configure then looks up <cpu>-w64-mingw32-gcc for each arch above.
+      # Naming one compiler here would force it on both and break the i386 half.
+      - --with-mingw
+      # The SDK carries OpenCL headers, so configure enables dlls/opencl, and they are
+      # then too new for it: every deprecated entry point it thunks (clUnloadCompiler,
+      # clSetUserEventStatus, ...) is compiled out of them and the build fails on the
+      # implicit declarations. Flathub's Wine pins its own OpenCL-Headers to get around
+      # that. CAM has no use for OpenCL, so turn it off rather than build a module for
+      # a DLL nothing here loads.
+      - --without-opencl
+      # Optional Wine features deliberately left out for the same reason -- CAM uses
+      # none of them, and each is a whole extra module to build: kerberos, ODBC and
+      # samba/ntlm_auth. configure notes their absence and carries on.
+    make-install-args:
+      - LDCONFIG=/bin/true
+      - UPDATE_DESKTOP_DATABASE=/bin/true
+      - INSTALL_PROGRAM_FLAGS=-s
+    build-options:
+      libdir: /app/lib
+      env:
+        LIBDIR: lib
+    sources:
+      - type: archive
+        url: https://dl.winehq.org/wine/source/11.x/wine-11.16.tar.xz
+        sha256: c66e2090343dcd727f7f7fd2f87ee0bfb0b118790c1d745ab7b8a4c3a4197f2f
+      # The twenty patches this project exists for. What each one fixes, and why, is
+      # in docs/wine-fixes.md. They are -p0 patches, hence strip-components: 0.
+      - type: patch
+        path: ../patches/01-propsys-hid-properties.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/02-devicewatcher-updated-removed.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/03-hidclass-publish-hid-interface-properties.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/04-devquery-honour-filters.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/05-devquery-enumerate-interface-properties.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/06-ideviceinformation2.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/07-wineusb-register-usb-device-interface.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/08-winusb-implementation.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/09-setupapi-physical-device-object-name.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/10-winusb-overlapped-urb-completion.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/11-wintypes-ireference-uint16.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/12-propsys-system-devices-children.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/13-cfgmgr32-device-node-queries.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/14-deviceinformation-createfromidasync.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/15-deviceinformation-property-key-case.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/16-deviceinformation-findallasync-kind.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/17-devquery-string-filter-comparison.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/18-wineusb-ms-os-device-interface-guid.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/19-winrt-windows-devices-usb.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/20-explorer-systray-icon-window-title.patch
+        strip-components: 0
+
+  # Needed by winetricks to unpack the corefonts cabs on first run.
+  - name: cabextract
+    sources:
+      - type: archive
+        url: https://deb.debian.org/debian/pool/main/c/cabextract/cabextract_1.11.orig.tar.gz
+        sha256: b5546db1155e4c718ff3d4b278573604f30dd64c3c5bfd4657cd089b823a3ac6
+        x-checker-data:
+          type: anitya
+          project-id: 245
+          stable-only: true
+          url-template: https://deb.debian.org/debian/pool/main/c/cabextract/cabextract_$version.orig.tar.gz
+
+  # Only ever used for one verb -- corefonts. Chromium renders zero-height text and
+  # then dies on a NOTREACHED without real fonts, so this is not cosmetic. The fonts
+  # are downloaded on first run rather than bundled: Microsoft's licence allows
+  # redistributing them in their original .exe form only.
+  - name: winetricks
+    no-autogen: true
+    make-install-args:
+      - PREFIX=/app
+    sources:
+      - type: git
+        url: https://github.com/Winetricks/winetricks.git
+        tag: '20260125'
+        commit: b76e1ee79ac57d7aceb384f74518fc423265810c
+
+  # The three Windows-side helpers. They are run by the launcher out of /app rather
+  # than copied into the prefix, except the CPUID shim, which has to sit next to the
+  # SDK it forwards to inside CAM's own install directory.
+  - name: nzxt-cam-tools
+    buildsystem: simple
+    build-commands:
+      # Rewrites DEVPKEY_Device_Parent after Wine's PnP manager rebuilds the device
+      # tree, which it does every time the wineserver starts.
+      - x86_64-w64-mingw32-gcc -O1 -municode -o usbtree-fixup.exe tools/usbtree-fixup.c -ladvapi32
+      - x86_64-w64-mingw32-strip usbtree-fixup.exe
+      # Wine registers the GPU but leaves its PCI location unset, and CAM drops any
+      # adapter whose BusNumber/Address it cannot read.
+      - x86_64-w64-mingw32-gcc -O1 -o gpu-pci-fixup.exe tools/gpu-pci-fixup.c
+      - x86_64-w64-mingw32-strip gpu-pci-fixup.exe
+      # Forwards to CPUID's real SDK and fills in the readings its ring-0 driver
+      # cannot take under Wine. See tools/cpuid-shim/README.md.
+      - x86_64-w64-mingw32-gcc -O1 -shared -o cpuidsdk64_shim.dll
+        tools/cpuid-shim/shim.c tools/cpuid-shim/thunks.S -loleaut32
+      - install -Dm644 -t /app/share/nzxt-cam usbtree-fixup.exe gpu-pci-fixup.exe cpuidsdk64_shim.dll
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - .git
+          - .github
+          - .idea
+          - build
+          - build-dir
+          - repo
+          - prebuilt
+          - .flatpak-builder
+
+  - name: nzxt-cam
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 -t /app/bin scripts/nzxt-cam scripts/nzxt-cam-setup
+        scripts/nzxt-cam-autostart scripts/nzxt-cam-gpu-poll scripts/nzxt-cam-nvml
+        scripts/nzxt-cam-xdpi
+      - install -Dm644 udev/60-nzxt-cam.rules -t /app/share/nzxt-cam
+      - install -Dm644 flatpak/io.github.adds39939.NzxtCamLinux.desktop
+        -t /app/share/applications
+      - install -Dm644 flatpak/io.github.adds39939.NzxtCamLinux.metainfo.xml
+        -t /app/share/metainfo
+      - install -Dm644 docs/nzxt-tux.png
+        /app/share/icons/hicolor/256x256/apps/io.github.adds39939.NzxtCamLinux.png
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - .git
+          - .github
+          - .idea
+          - build
+          - build-dir
+          - repo
+          - prebuilt
+          - .flatpak-builder

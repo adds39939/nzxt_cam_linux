@@ -1,4 +1,4 @@
-# Publish a release from the binaries build.yaml produced.
+# Publish a release from the Flatpak bundle build.yaml produced.
 #
 # This does not build anything itself. It calls build.yaml -- the same workflow every
 # pull request into main has to pass -- and publishes the artifact that came out of it,
@@ -9,7 +9,7 @@ name: release
 on:
   push:
     branches: [main]
-    # A release carries binaries, so don't cut one for a docs-only change.
+    # A release carries a gigabyte of Wine, so don't cut one for a docs-only change.
     paths-ignore:
       - 'README.md'
       - 'docs/**'
@@ -44,34 +44,54 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          [ -s nzxt-cam-linux.tar.gz ] || { echo "no tarball came back from build" >&2; exit 1; }
-          ls -lh nzxt-cam-linux.tar.gz
+          [ -s nzxt-cam-linux.flatpak ] || { echo "no bundle came back from build" >&2; exit 1; }
+          ls -lh nzxt-cam-linux.flatpak
 
           tag="v$(date -u +%Y.%m.%d)-${{ github.run_number }}"
           wine_version="$(cat WINE_VERSION)"
 
           {
-            echo "Install or update with:"
+            echo "Install with:"
             echo
             echo '```bash'
-            echo "curl -L https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash"
+            echo "flatpak install --user nzxt-cam-linux.flatpak"
             echo '```'
             echo
-            echo "That downloads NZXT CAM, builds a patched Wine prefix from the tarball"
-            echo "below and installs a \`nzxt-cam\` launcher."
+            echo "Then install the udev rule. This is the one step that needs root and"
+            echo "the one step you cannot skip: NZXT devices stay owned by root until a"
+            echo "rule says otherwise, and no Flatpak can install one -- so without it CAM"
+            echo "starts, looks entirely normal, and detects no cooler."
+            echo
+            echo '```bash'
+            echo "flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --udev-rule \\"
+            echo "  | sudo tee /etc/udev/rules.d/60-nzxt-cam.rules >/dev/null"
+            echo "sudo udevadm control --reload-rules"
+            echo "sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb"
+            echo '```'
+            echo
+            echo "(liquidctl and OpenRGB ship a rule for NZXT's vendor id already; if you"
+            echo "use either, this is done.)"
+            echo
+            echo "Then start it from your application menu, or with:"
+            echo
+            echo '```bash'
+            echo "flatpak run io.github.adds39939.NzxtCamLinux"
+            echo '```'
+            echo
+            echo "The first run downloads NZXT CAM from NZXT and installs it into the"
+            echo "bundled Wine prefix. Nothing else is needed on the host -- no wine, no"
+            echo "winetricks, no cabextract."
             echo
             echo "Remove it again with:"
             echo
             echo '```bash'
-            echo "curl -L https://raw.githubusercontent.com/${{ github.repository }}/main/uninstall.sh | bash"
+            echo "flatpak uninstall --delete-data io.github.adds39939.NzxtCamLinux"
             echo '```'
             echo
-            echo "That deletes the Wine prefix, the launcher and the menu entries."
-            echo
-            echo "Built against **wine-${wine_version}** from ${{ github.sha }}."
+            echo "Bundles **wine-${wine_version}**, patched, built from ${{ github.sha }}."
           } > release-notes.md
 
-          gh release create "$tag" nzxt-cam-linux.tar.gz \
+          gh release create "$tag" nzxt-cam-linux.flatpak \
             --title "$tag" \
             --notes-file release-notes.md \
             --latest

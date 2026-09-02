@@ -20,5 +20,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-The MIT license above covers this repository's own scripts, patches and
-documentation. It does NOT cover the binaries in prebuilt/ -- see NOTICE.
+The MIT license above covers this repository's own scripts, patches,
+Flatpak manifest and documentation. It does NOT cover the Wine build inside
+the published Flatpak, which is LGPL-2.1-or-later -- see NOTICE.

@@ -1,0 +1,407 @@
+#!/usr/bin/env bash
+# Launch NZXT CAM in its patched Wine prefix.
+#
+#   nzxt-cam            supervise CAM
+#   nzxt-cam --startup  what the autostart entry passes; CAM's own "Start minimized"
+#                       setting is what then sends it to the tray
+#   nzxt-cam --setup    (re)run the first-run install and exit
+#
+# Anything else is handed to CAM, nzxt-cam:// deep links included.
+#
+# Wine lives in /app and is already patched -- the two kernel drivers are in
+# /app/lib/wine/x86_64-windows where Wine maps them from, and the patched user-mode
+# DLLs are its own builtins. Nothing has to be injected into the prefix, so this
+# script only has to deal with what changes at runtime.
+set -uo pipefail
+
+export WINEPREFIX="${WINEPREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/wineprefix}"
+
+CAMDIR="$WINEPREFIX/drive_c/Program Files/NZXT CAM"
+LOG="$WINEPREFIX/nzxt-cam.log"
+LOCK="$WINEPREFIX/.nzxt-cam.lock"
+# Touched by a second launch to ask the running one to show its window. See
+# request_raise() for why a second launch cannot do that itself.
+RAISE="$WINEPREFIX/.nzxt-cam.raise"
+TOOLS="${NZXT_CAM_TOOLS:-/app/share/nzxt-cam}"
+APPID="io.github.adds39939.NzxtCamLinux"
+
+args=()
+for a in "$@"; do
+  case "$a" in
+    -h|--help)   sed -n '2,9p' "$0" | cut -c3-; exit 0 ;;
+    --setup)     exec nzxt-cam-setup ;;
+    *)           args+=("$a") ;;
+  esac
+done
+set -- ${args[@]+"${args[@]}"}
+
+mkdir -p "$WINEPREFIX"
+
+# ----------------------------------------------------------------- one at a time
+
+# Only one launcher at a time. Each one supervises CAM and refreshes the GPU readings,
+# so a second fights the first over restarts and over that file -- which looks like
+# readings that flicker or go stale for no reason.
+#
+# Probe the lock rather than take it, so that taking it below is still possible.
+lock_held() {
+  ! ( { exec 9>"$LOCK"; } 2>/dev/null || exit 0; flock -n 9 ) 2>/dev/null
+}
+
+# Bringing the running copy to the front is normally a matter of starting CAM again:
+# Electron's single-instance lock means the second one hands its arguments to the
+# first and exits, and unlike poking at the window that works from the tray, and on
+# Wayland.
+#
+# It cannot be done from here. Every `flatpak run` is a fresh sandbox with its own
+# PID namespace and its own /tmp, and Wine's server socket lives in /tmp -- so a
+# second instance would not find the running wineserver, it would start a SECOND one
+# against the same prefix. Two wineservers on one prefix is how a prefix gets
+# corrupted. Ask the instance that owns the prefix to do it instead.
+request_raise() {
+  : > "$RAISE" 2>/dev/null || return 1
+  return 0
+}
+
+if lock_held; then
+  if request_raise; then
+    echo "nzxt-cam: already running -- asked it to show its window"
+  else
+    echo "nzxt-cam: already running" >&2
+  fi
+  exit 0
+fi
+
+# Take it for real. Note the braces: "exec 9>file 2>/dev/null" would apply that second
+# redirection to the shell as well, and silently throw away every message from here on.
+locked=1
+if { exec 9>"$LOCK"; } 2>/dev/null; then
+  flock -n 9 || locked=0
+fi
+if [ "$locked" = 0 ]; then
+  # Lost the race with another launcher started at the same moment.
+  request_raise
+  echo "nzxt-cam: already running" >&2
+  exit 0
+fi
+rm -f "$RAISE"
+
+# Everything from here writes to that log, so trim it before it grows without end.
+[ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ] && : > "$LOG"
+
+# Started from the application menu or the autostart entry, there is no terminal for
+# any of this to go to -- and Wine writes a fixme line for every stub it hits, so it is
+# not nothing. Send it to the one file the docs tell people to read. Started from a
+# terminal, print to it as before.
+[ -t 1 ] || exec >>"$LOG" 2>&1
+
+# ------------------------------------------------------------------- first run
+
+# CAM is not redistributed -- it is downloaded from NZXT and installed into the prefix
+# the first time this runs.
+if [ ! -d "$CAMDIR" ]; then
+  nzxt-cam-setup || { echo "nzxt-cam: setup failed -- see $LOG" >&2; exit 1; }
+fi
+[ -d "$CAMDIR" ] || { echo "nzxt-cam: CAM is not installed" >&2; exit 1; }
+
+# -------------------------------------------------------------- device access
+
+# NZXT devices stay owned by root until a udev rule says otherwise, and no Flatpak can
+# install one. Without it CAM starts and looks entirely normal while Cooling and
+# Lighting stay empty, which gives no hint at all where to look -- so say so, once,
+# somewhere the user will actually see it.
+# Test the NZXT device's own hidraw node, not just any of them. Asking whether some
+# /dev/hidraw* is readable answers nothing: a keyboard or a game controller carries
+# uaccess on most desktops, so the check passed on every machine that had one and this
+# warning could never fire.
+check_device_access() {
+  local dev node found=0 blocked=0
+  for dev in /sys/bus/hid/devices/*; do
+    case "${dev##*/}" in *:1E71:*|*:1e71:*) ;; *) continue ;; esac
+    found=1
+    for node in "$dev"/hidraw/hidraw*; do
+      [ -e "$node" ] || continue
+      node="/dev/${node##*/}"
+      { [ -r "$node" ] && [ -w "$node" ]; } || blocked=1
+    done
+  done
+  [ "$found" = 1 ] || return 0          # no NZXT device attached; nothing to say
+  [ "$blocked" = 1 ] || return 0        # its own nodes are reachable
+
+  # This cannot be fixed from in here. udev runs on the host, outside every container,
+  # and the sandbox has no root to escalate to -- the only mechanism that would work is
+  # flatpak-spawn --host, which hands the sandbox the run of the machine. So the most
+  # this can do is make the failure obvious and hand over the exact command, instead of
+  # letting CAM come up looking perfectly healthy with no cooler in it.
+  #
+  # Not "cp $TOOLS/...": /app exists only inside the sandbox, and the shell the user
+  # runs sudo in does not have it. Pipe the rule out instead.
+  local cmd="flatpak run --command=nzxt-cam-setup $APPID --udev-rule \\
+  | sudo tee /etc/udev/rules.d/60-nzxt-cam.rules >/dev/null
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb"
+
+  echo "nzxt-cam: an NZXT device is attached but its /dev/hidraw* is not accessible." >&2
+  echo "nzxt-cam: CAM will start and detect nothing. On the host, run:" >&2
+  printf 'nzxt-cam:   %s\n' "$cmd" >&2
+
+  # A text-info dialog rather than a warning box: the text can be selected and copied,
+  # which matters when the whole point is to get four lines into a terminal.
+  if command -v zenity >/dev/null 2>&1 &&
+     { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }; then
+    printf '%s\n\n%s\n' \
+      "NZXT CAM cannot reach your cooler. Run this in a terminal, then restart CAM:" \
+      "$cmd" |
+    zenity --text-info --title="NZXT CAM needs one step on the host" \
+           --width=720 --height=230 >/dev/null 2>&1 || true
+  else
+    notify-send -a "NZXT CAM" -u critical "NZXT CAM cannot reach your device" \
+      "A udev rule is needed. Run:  flatpak run --command=nzxt-cam-setup $APPID --udev-help" \
+      2>/dev/null || true
+  fi
+}
+check_device_access
+
+# ---------------------------------------------------------------------- scale
+
+# CAM always renders at 100%, so on a scaled display it comes out small. Scaling goes
+# through Wine's DPI, which Chromium reports as its device pixel ratio.
+#
+# Do NOT scale with --force-device-scale-factor instead. It sizes the window correctly
+# but stops cam-core from starting, so no NZXT device is ever detected -- the UI looks
+# perfectly fine while the Cooling and Lighting pages stay empty.
+#
+# kscreen-doctor is outside the sandbox, so the scale has to come from somewhere the
+# app can reach. Override the lot with:
+#   flatpak override --user --env=NZXT_CAM_SCALE=1.5 io.github.adds39939.NzxtCamLinux
+
+# gdbus prints a ReadOne result as its full variant -- "(<uint32 1>,)" for an integer,
+# "(<1.0>,)" for a double. Unwrap it and drop the type name; grepping for digits would
+# find the 32 in "uint32".
+portal_read() {                 # portal_read <namespace> <key>
+  gdbus call --session --dest org.freedesktop.portal.Desktop \
+      --object-path /org/freedesktop/portal/desktop \
+      --method org.freedesktop.portal.Settings.ReadOne "$1" "$2" 2>/dev/null \
+    | sed -n 's/^(<\(.*\)>,)$/\1/p' \
+    | sed 's/^[a-z0-9]* //'
+}
+
+# What GTK itself does: an integer window scale times a fractional text scale.
+#
+# This is the fallback rather than the answer, because the key cannot express a
+# fractional scale and KDE therefore reports 1 for a display at 125% or 145%. Trusting
+# it is how CAM ended up rendering at 100% on a scaled KDE desktop.
+portal_dpi() {
+  local factor text
+  factor="$(portal_read org.gnome.desktop.interface scaling-factor)"
+  text="$(portal_read org.gnome.desktop.interface text-scaling-factor)"
+  awk -v f="${factor:-1}" -v t="${text:-1}" \
+      'BEGIN { if (f < 1) f = 1; if (t < 0.5) t = 1; printf "%d", (96 * f * t) + 0.5 }'
+}
+
+# In order: what the user asked for, what the desktop tells its X clients, what the
+# portal can manage. See scripts/nzxt-cam-xdpi for why the middle one is the good one.
+target_dpi() {
+  local dpi
+  if [ -n "${NZXT_CAM_SCALE:-}" ]; then
+    awk -v s="$NZXT_CAM_SCALE" 'BEGIN{printf "%d", (s*96)+0.5}'
+    return 0
+  fi
+  if dpi="$(nzxt-cam-xdpi 2>/dev/null)" && [ -n "$dpi" ]; then
+    printf '%s\n' "$dpi"
+    return 0
+  fi
+  portal_dpi
+}
+
+apply_scale() {
+  local dpi cur
+  dpi="$(target_dpi)"
+  [ "$dpi" -ge 96 ] 2>/dev/null || return 0
+  cur=$(wine reg query 'HKCU\Control Panel\Desktop' /v LogPixels 2>/dev/null \
+        | awk '/LogPixels/{print strtonum($NF)}')
+  # An unset LogPixels already means 96, so do not write it just to say so -- that
+  # would bounce the wineserver on every first launch for no change at all.
+  [ -z "${cur:-}" ] && [ "$dpi" = 96 ] && return 0
+  if [ "$dpi" != "${cur:-}" ]; then
+    echo "nzxt-cam: setting Wine's DPI to $dpi"
+    wine reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$dpi" /f >/dev/null 2>&1
+    wineserver -w
+  fi
+}
+
+# ----------------------------------------------------------------- tray icon
+
+# Wine's explorer publishes CAM's tray icon as an XEmbed window, which KDE proxies into
+# a StatusNotifierItem. On a Flatpak that produces a second entry, because Plasma also
+# lists the app under its Background Apps indicator -- xdg-desktop-portal reports every
+# sandboxed application that runs without a visible window, and CAM lives in the tray.
+# The two look alike and only one of them has CAM's menu on it.
+#
+# NZXT_CAM_TRAY=0 turns Wine's icon off, leaving Plasma's entry as the only one:
+#   flatpak override --user --env=NZXT_CAM_TRAY=0 io.github.adds39939.NzxtCamLinux
+#
+# NoTrayItemsDisplay is the stock Windows policy for this and Wine implements it, so
+# there is nothing to patch. It suppresses every tray icon in the prefix, which here
+# means CAM's, since nothing else runs in it.
+#
+# Off by default. Desktops other than KDE have no Background Apps indicator, and there
+# this is the only tray icon there is -- turning it off by default would leave those
+# users with no tray icon at all.
+TRAY_POLICY='HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+apply_tray_policy() {
+  local want cur
+  want=0
+  [ "${NZXT_CAM_TRAY:-1}" = "0" ] && want=1
+  cur=$(wine reg query "$TRAY_POLICY" /v NoTrayItemsDisplay 2>/dev/null \
+        | awk '/NoTrayItemsDisplay/{print strtonum($NF)}')
+  [ "${cur:-0}" = "$want" ] && return 0
+  if [ "$want" = 1 ]; then
+    echo "nzxt-cam: hiding Wine's tray icon (NZXT_CAM_TRAY=0)"
+    wine reg add "$TRAY_POLICY" /v NoTrayItemsDisplay /t REG_DWORD /d 1 /f >/dev/null 2>&1
+  else
+    echo "nzxt-cam: restoring Wine's tray icon"
+    wine reg delete "$TRAY_POLICY" /v NoTrayItemsDisplay /f >/dev/null 2>&1
+  fi
+  wineserver -w
+}
+
+# --------------------------------------------------------------- device fixups
+
+# Wine's PnP manager rebuilds the device tree (and rewrites DEVPKEY_Device_Parent)
+# every time the server starts, so these have to be re-applied after enumeration and
+# before CAM looks for its device -- including after the crash restart below, which
+# stops the server. Give plugplay a moment to settle first, otherwise the interfaces
+# are not in the registry yet.
+apply_device_fixups() {
+  if [ -f "$TOOLS/usbtree-fixup.exe" ]; then
+    wine cmd /c exit >/dev/null 2>&1
+    sleep 3
+    wine "$TOOLS/usbtree-fixup.exe" >/dev/null 2>&1
+  fi
+  # Wine registers the GPU but leaves its PCI location unset, and CAM drops any
+  # adapter whose BusNumber/Address it cannot read. Fill them in from the host.
+  [ -f "$TOOLS/gpu-pci-fixup.exe" ] && wine "$TOOLS/gpu-pci-fixup.exe" >/dev/null 2>&1
+  return 0
+}
+
+# ----------------------------------------------------------------- crash guard
+
+# The Capture Card page kills CAM's renderer under Wine (exit code 0xC0000409): it
+# needs a COM class Wine does not implement. CAM restores the last page on launch and
+# gives up after two crashes, so one click otherwise leaves the app blank for good.
+#
+# Two halves to the guard: send the stored route back to the dashboard before starting,
+# and watch for CAM's own "crash threshold" message while it runs, so a click during
+# the session recovers by itself instead of needing a manual relaunch.
+reset_fatal_route() {
+  local router
+  for router in "$WINEPREFIX"/drive_c/users/*/AppData/Roaming/"NZXT CAM"/DataStorage/latest/local/router.json; do
+    [ -f "$router" ] || continue
+    if grep -q '"/capture"' "$router" 2>/dev/null; then
+      printf '{"pathname":"/"}\n' > "$router"
+    fi
+  done
+}
+
+cam_log_path() {
+  local f
+  for f in "$WINEPREFIX"/drive_c/users/*/AppData/Roaming/"NZXT CAM"/logs/main.log; do
+    [ -e "$f" ] && { printf '%s\n' "$f"; return 0; }
+  done
+  return 1
+}
+
+# ------------------------------------------------------------------- shutdown
+
+cleanup() {
+  trap - EXIT INT TERM
+  [ -n "${poller:-}" ] && kill "$poller" 2>/dev/null
+  [ -n "${raiser:-}" ] && kill "$raiser" 2>/dev/null
+  if [ -n "${cam:-}" ] && kill -0 "$cam" 2>/dev/null; then
+    kill "$cam" 2>/dev/null
+    for _ in 1 2 3 4 5; do kill -0 "$cam" 2>/dev/null || break; sleep 1; done
+  fi
+  wineserver -k >/dev/null 2>&1 || true
+  rm -f "$RAISE"
+
+  # Once more on the way out, now that stopping the wineserver has flushed the
+  # registry: a "start with Windows" flipped during this session is on disk by this
+  # point, and picking it up here is what stops the change waiting for the next launch.
+  timeout 10 nzxt-cam-autostart sync >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
+
+# ---------------------------------------------------------------------- start
+
+# CAM's own "start with Windows" switch writes to the prefix's Run key, which Wine only
+# acts on when a Wine session starts -- and nothing starts one when you log in to
+# Linux. Make the switch mean something by mirroring it onto the Linux side. Once here
+# and once on the way out, which between them cover a switch flipped while CAM was
+# running and one flipped in a session that has since ended.
+nzxt-cam-autostart sync >/dev/null 2>&1 || true
+
+# The shim cannot read the GPU from inside the prefix, so refresh the readings into a
+# file it can. The poller works out where to get them: the kernel's hwmon and DRM
+# interfaces for AMD, Intel and nouveau, NVML for NVIDIA's proprietary driver.
+GPU_STATE="$WINEPREFIX/drive_c/windows/temp/nzxt-cam-gpu"
+mkdir -p "$(dirname "$GPU_STATE")"
+nzxt-cam-gpu-poll "$GPU_STATE" 2 >/dev/null 2>&1 &
+poller=$!
+
+# Answer the raise requests a second launch leaves behind. Runs in this sandbox, so
+# it reaches this instance's wineserver and CAM's single-instance lock.
+raise_watcher() {
+  while :; do
+    if [ -e "$RAISE" ]; then
+      rm -f "$RAISE"
+      if pgrep -f 'NZXT CAM\.exe' >/dev/null 2>&1; then
+        ( cd "$CAMDIR" && timeout 30 wine "NZXT CAM.exe" ) >/dev/null 2>&1 || true
+      fi
+    fi
+    sleep 1
+  done
+}
+raise_watcher &
+raiser=$!
+
+cd "$CAMDIR" || exit 1
+apply_scale
+apply_tray_policy
+
+attempt=0
+while :; do
+  reset_fatal_route
+  apply_device_fixups
+
+  # Only look at log lines this run appends, not a previous session's.
+  cam_log="$(cam_log_path || true)"
+  offset=0
+  [ -n "$cam_log" ] && offset=$(wc -c < "$cam_log")
+
+  wine "NZXT CAM.exe" "$@" &
+  cam=$!
+
+  crashed=0
+  while kill -0 "$cam" 2>/dev/null; do
+    [ -n "$cam_log" ] || cam_log="$(cam_log_path || true)"
+    if [ -n "$cam_log" ] &&
+       tail -c "+$((offset + 1))" "$cam_log" 2>/dev/null | grep -q "Crash threshold reached"; then
+      crashed=1
+      break
+    fi
+    sleep 2
+  done
+
+  if [ "$crashed" -eq 1 ] && [ "$attempt" -lt 2 ]; then
+    attempt=$((attempt + 1))
+    echo "nzxt-cam: CAM's renderer crash-looped (the Capture Card page does that under" >&2
+    echo "nzxt-cam: Wine). Restarting on the dashboard." >&2
+    wineserver -k 2>/dev/null || true
+    sleep 3
+    continue
+  fi
+
+  wait "$cam" 2>/dev/null
+  break
+done

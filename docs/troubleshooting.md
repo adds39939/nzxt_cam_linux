@@ -1,114 +1,183 @@
 # Troubleshooting
 
+Everything below assumes the Flatpak. Two shorthands, because they come up constantly:
+
+```bash
+FP="flatpak run --command=sh io.github.adds39939.NzxtCamLinux -c"   # a shell in the sandbox
+PFX=~/.var/app/io.github.adds39939.NzxtCamLinux/data/wineprefix     # the Wine prefix
+```
+
+The prefix is a normal directory on your disk — you can read its logs and settings from
+outside the sandbox without any of this. It is only Wine itself that has to be run from
+inside, because that is where Wine is.
+
 **"NZXT CAM can not start while cam_helper.exe is running"** — an orphaned helper is
-still alive. Kill the prefix's Wine session:
+still alive. Every `flatpak run` gets its own PID namespace, so the wineserver you need
+to stop is the one inside the running instance:
 
 ```bash
-WINEPREFIX=~/pfx/nzxt_cam wineserver -k
+flatpak kill io.github.adds39939.NzxtCamLinux
 ```
 
-**GPU readings are `n/a`, or the cooler is missing, but only sometimes** — CAM was
-started without the launcher. Wine generates its own shortcut for CAM that runs it
-directly, and that one starts none of the GPU polling or device fix-ups. Point the
-menu entry back at the launcher, and clear away any desktop shortcut that came back
-with it:
+If the app is not running at all and you still get this, the prefix has a stale lock:
+`$FP 'wineserver -k'` from a fresh instance clears it.
+
+**Nothing happens when I start CAM** — if it is already running this is expected: the
+second launch asks the running one to bring its window to the front, out of the tray if
+that is where it is, and exits. Otherwise look in the launcher's log:
 
 ```bash
-~/.local/bin/nzxt-cam-desktop-entries ~/pfx/nzxt_cam
+tail -f $PFX/nzxt-cam.log
 ```
 
-The launcher also does this each time it starts, so running `nzxt-cam` once fixes them
-too. Only one launcher runs at a time — each supervises CAM and refreshes the GPU
-readings, so a second would fight the first — and starting CAM again while it is up
-hands the arguments to the copy already running, which brings its window back, out of
-the tray if that is where it is.
+Only one launcher runs at a time — each supervises CAM and refreshes the GPU readings,
+so a second would fight the first.
 
-**Nothing happens when I start CAM, and nothing is logged** — if it is already running
-this is expected, and `nzxt-cam` now says so. Otherwise look in the launcher's log,
-which is where both a detached launch and the systemd unit write:
-
-```bash
-tail -f ~/pfx/nzxt_cam/nzxt-cam.log
-systemctl --user status nzxt-cam        # if it was started on login
-```
-
-Wine's output must not go to the journal, which is why the unit sends it to that file.
-Wine writes a `fixme` line for every stub it hits, hundreds in the first seconds, and
-journald's socket buffer fills faster than it drains; the write then blocks and CAM
-hangs part-way through starting, with one process, no window and nothing logged. If
-you write a unit of your own, give it `StandardOutput=append:` a file, not the
-default.
-
-**CAM starts fine but no NZXT device is ever detected** — the cooler is owned by
-root. Wine reaches it through `/dev/hidraw*`, and udev leaves those root-only unless a
-rule says otherwise, so CAM enumerates nothing: the window looks completely normal
-while Cooling and Lighting stay empty. `cam.log` gives it away — `Init device list:`
-is followed by the CPU and GPU and no cooler. Check whether you can open it:
+**CAM starts fine but no NZXT device is ever detected** — the cooler is owned by root.
+Wine reaches it through `/dev/hidraw*`, and udev leaves those root-only unless a rule
+says otherwise, so CAM enumerates nothing: the window looks completely normal while
+Cooling and Lighting stay empty. `cam.log` gives it away — `Init device list:` is
+followed by the CPU and GPU and no cooler. Check whether you can open it:
 
 ```bash
 lsusb | grep 1e71                       # find the device
 ls -l /dev/hidraw*                      # ours should be crw-rw----+, not crw-------
 ```
 
-The install offers to write the rule that fixes this; it is skipped when some other
-rule already grants access, which is why machines with liquidctl or OpenRGB never see
-the problem. To put it in by hand:
+A Flatpak cannot install a udev rule, and cannot be made to. udev runs on the host,
+outside every container, and the sandbox has no root to escalate to -- `sudo` and
+`pkexec` inside it have nothing to escalate *to*. The only mechanism that would work is
+`flatpak-spawn --host`, which requires handing the sandbox permission to run arbitrary
+commands on the host; that is a far worse trade than one command, so this project does
+not ask for it. What the launcher does instead is notice, and hand you the command.
+
+So this one step is on you:
 
 ```bash
-sudo tee /etc/udev/rules.d/60-nzxt-cam.rules >/dev/null <<'RULE'
-KERNEL=="hidraw*", ATTRS{idVendor}=="1e71", MODE="0660", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", MODE="0660", TAG+="uaccess"
-RULE
-sudo udevadm control --reload-rules
-sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb
+flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --udev-help
 ```
 
-Then restart CAM, so Wine enumerates the bus again:
-`WINEPREFIX=~/pfx/nzxt_cam wineserver -k` and start it back up.
+which prints exactly what to run. Machines with liquidctl or OpenRGB already have a
+rule for NZXT's vendor id and never see the problem. After installing it, restart the
+app so Wine enumerates the bus again.
 
-**No text anywhere in the window** — the fonts did not land. Check for them:
+**No text anywhere in the window** — the fonts did not land. Chromium renders
+zero-height text without real fonts and the renderer then dies on a `NOTREACHED`.
 
 ```bash
-ls ~/pfx/nzxt_cam/drive_c/windows/Fonts/arial.ttf
+ls $PFX/drive_c/windows/Fonts/arial.ttf
 ```
 
-If it is missing, re-run the installer.
-
-**The cooler is not detected after a `wine` package upgrade** — it should not be, any
-more. CAM runs against its own copy of Wine in `~/.local/share/nzxt-cam/wine`, which is
-where its patched drivers live, and a package upgrade cannot reach it. Check what CAM
-is actually using:
+If it is missing, the first-run corefonts download failed — most likely no network at
+the time. Put it right with:
 
 ```bash
-nzxt-cam-wine-tree version
+flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --reinstall
 ```
 
-If that says "not installed", the tree is missing and the launcher has fallen back to
-the system Wine — which has no patched drivers. Rebuilding it re-applies them from the
-copy the install kept:
+**The cooler is not detected after a system update** — it cannot be caused by one any
+more. The Wine that CAM runs against is inside the Flatpak, and no package manager
+touches it. If updating the Flatpak itself is what changed things, install the previous
+release's bundle over the top; the prefix is kept, so CAM's settings survive:
 
 ```bash
-nzxt-cam-wine-tree create
+flatpak install --user nzxt-cam-linux.flatpak     # from the older release
 ```
 
-**The window is the wrong size** — set the scale explicitly:
+**The window is the wrong size** — the launcher sets Wine's DPI from the `Xft.dpi` X
+resource, which is what KDE and GNOME publish to their X clients. See what it found,
+and what it did with it:
 
 ```bash
-NZXT_CAM_SCALE=1.5 nzxt-cam
+flatpak run --command=nzxt-cam-xdpi io.github.adds39939.NzxtCamLinux   # the DPI, or nothing
+grep 'setting Wine' $PFX/nzxt-cam.log                                  # what it applied
 ```
+
+If it prints nothing, your desktop sets no `Xft.dpi` and the launcher falls back to the
+settings portal — which reports only an integer scale, so a fractional one comes out as
+100%. Set it explicitly:
+
+```bash
+flatpak override --user --env=NZXT_CAM_SCALE=1.5 io.github.adds39939.NzxtCamLinux
+```
+
+To confirm the renderer actually took it, `1.45` scaling should show as a
+`devicePixelRatio` of `1.4479` (139/96) under the remote debugger below.
 
 Do **not** use Chromium's `--force-device-scale-factor` instead. It sizes the window
-correctly but stops cam-core from starting, so no NZXT device is ever detected — the
-UI looks completely normal while Cooling and Lighting stay empty and `cam.log` is
-empty.
+correctly but stops cam-core from starting, so no NZXT device is ever detected — the UI
+looks completely normal while Cooling and Lighting stay empty and `cam.log` is empty.
 
-**KDE forgets that the tray icon should be hidden** — it comes back in the visible
-tray after every reboot. Stock Wine gives its tray icon windows no title, and Plasma's
+**GPU readings are `n/a`** — see which source the poller picked; it says so on stderr,
+which goes to the launcher's log:
+
+```bash
+grep gpu-poll $PFX/nzxt-cam.log
+```
+
+`reading ... via sysfs` is AMD, Intel or nouveau. `through NVML` is NVIDIA's
+proprietary driver. `no GPU telemetry available` on an NVIDIA machine means the runtime
+has no NVIDIA extension — check that one is installed, which Flatpak normally does by
+itself:
+
+```bash
+flatpak list | grep GL.nvidia
+```
+
+Note that NVIDIA reports fan speed as a percentage where CAM's field is RPM, so the fan
+stays `n/a` there by design rather than showing a number in the wrong unit.
+
+**Two "NZXT CAM" entries in the KDE system tray** — only one of them is CAM. The other
+is Plasma's *Background Apps* indicator, and it is not something this project creates.
+
+`xdg-desktop-portal` tracks sandboxed applications that keep running without a visible
+window, and Plasma lists each one in the tray under the application's own name and
+icon. CAM lives in the tray, so it qualifies. Ask the portal directly:
+
+```bash
+busctl --user call org.freedesktop.background.Monitor /org/freedesktop/background/monitor \
+  org.freedesktop.DBus.Properties Get ss org.freedesktop.background.Monitor BackgroundApps
+```
+
+Telling the two apart: CAM's real tray icon carries CAM's own menu, is registered as a
+`StatusNotifierItem` with the id `NZXT CAM`, and is proxied out of Wine by
+`xembedsniproxy`. The Background Apps entry uses the id
+`io.github.adds39939.NzxtCamLinux` and appears in no watcher at all:
+
+```bash
+busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher \
+       org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems
+```
+
+Nothing the application can do suppresses the Background Apps indicator; it comes with
+being a Flatpak that runs in the tray. So pick which of the two you want and turn the
+other off.
+
+Keep CAM's own icon and hide Plasma's: in *Configure System Tray → Entries*, set the
+entry carrying the **application** icon to **Never show (disabled)**.
+
+Or keep Plasma's and stop Wine publishing one at all:
+
+```bash
+flatpak override --user --env=NZXT_CAM_TRAY=0 io.github.adds39939.NzxtCamLinux
+```
+
+That sets `NoTrayItemsDisplay`, the stock Windows policy for hiding tray icons, which
+Wine implements — so the icon is never created rather than created and hidden. Note
+that CAM's *close minimizes to tray* setting then has nowhere to minimize to: closing
+the window leaves CAM running with no icon to click. Starting it again brings the
+window back, which is what the launcher's single-instance handling does anyway.
+
+On desktops other than KDE there is no Background Apps indicator, and Wine's icon is
+the only one there is — which is why this is off by default.
+
+**KDE forgets that the tray icon should be hidden** — it comes back in the visible tray
+after every reboot. Stock Wine gives its tray icon windows no title, and Plasma's
 `xembedsniproxy` then has nothing to identify the icon by except the X11 window id,
 which is different on every run — so the "keep this hidden" setting is saved against an
 id that never comes back. The patched `explorer.exe` (fix 24 in
-[wine-fixes.md](wine-fixes.md)) names the window after the application instead. Check
-which build is in use:
+[wine-fixes.md](wine-fixes.md)) names the window after the application instead, and the
+Flatpak always carries it. Check what the tray sees:
 
 ```bash
 busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher \
@@ -120,25 +189,44 @@ busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher 
   done
 ```
 
-`s "NZXT CAM"` is the patched build and the setting will stick; a bare number means
-CAM is running against a stock `explorer.exe` — reinstall it with
-`scripts/install-wine-drivers.sh`. Hide the icon once more after installing, since it
-arrives under a name the tray has not seen before. Old numeric leftovers accumulate in
-the `hiddenItems=` line of `~/.config/plasma-org.kde.plasma.desktop-appletsrc`; they
-are harmless, and can be deleted from that line by hand. Plasma reads it at login, so
-log out and back in afterwards.
+`s "NZXT CAM"` is what you want. Hide the icon once more the first time it appears
+under that name. Old numeric leftovers from the native install accumulate in the
+`hiddenItems=` line of `~/.config/plasma-org.kde.plasma.desktop-appletsrc`; they are
+harmless, and can be deleted from that line by hand. Plasma reads it at login, so log
+out and back in afterwards.
 
 **Inspecting the live UI** — useful when a screenshot will not tell you enough:
 
 ```bash
-nzxt-cam --remote-debugging-port=9222
+flatpak run io.github.adds39939.NzxtCamLinux --remote-debugging-port=9222
 curl -s http://127.0.0.1:9222/json    # then drive it over CDP
 ```
 
-**Logs** live in
-`~/pfx/nzxt_cam/drive_c/users/$USER/AppData/Roaming/NZXT CAM/logs/`
-(`main.log`, `renderer.log`, `cam.log`, `cam_helper.log`).
+**Logs** live in `$PFX/drive_c/users/*/AppData/Roaming/NZXT CAM/logs/`
+(`main.log`, `renderer.log`, `cam.log`, `cam_helper.log`), and the launcher's own in
+`$PFX/nzxt-cam.log`.
 
-**Starting over** — see [Uninstall](../README.md#uninstall). The installer also leaves
-`.stock-backup` copies of every DLL it replaces in the prefix's `system32`, but those
-go with the prefix.
+**Starting over**
+
+```bash
+flatpak uninstall --delete-data io.github.adds39939.NzxtCamLinux
+```
+
+That takes the prefix and CAM's settings with it. To keep the app and only rebuild the
+prefix, delete `$PFX` and start CAM again — the first-run install runs from scratch.
+
+**Coming from the native install** — the old one put its prefix in `~/pfx/nzxt_cam`,
+a launcher in `~/.local/bin/nzxt-cam*`, a private Wine tree in
+`~/.local/share/nzxt-cam/`, and possibly a systemd user unit. None of it is used any
+more, and the Flatpak starts from a fresh prefix, so CAM's settings and profiles do not
+carry over. Clean it up with:
+
+```bash
+systemctl --user disable --now nzxt-cam.service 2>/dev/null
+rm -f ~/.config/systemd/user/nzxt-cam.service ~/.config/autostart/nzxt-cam.desktop
+rm -f ~/.local/bin/nzxt-cam ~/.local/bin/nzxt-cam-*
+rm -rf ~/.local/share/nzxt-cam ~/pfx/nzxt_cam
+```
+
+The udev rule at `/etc/udev/rules.d/60-nzxt-cam.rules` is the one thing worth keeping —
+the Flatpak needs exactly the same rule.

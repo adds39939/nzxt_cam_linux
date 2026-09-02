@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.adds39939.NzxtCamLinux</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT AND LGPL-2.1-or-later</project_license>
+
+  <name>NZXT CAM</name>
+  <summary>Run NZXT CAM on Linux and drive your NZXT hardware</summary>
+
+  <developer id="io.github.adds39939">
+    <name>adds39939</name>
+  </developer>
+
+  <description>
+    <p>
+      NZXT CAM is NZXT's own software for their coolers, fans and RGB controllers. It
+      is Windows-only. This package runs it on Linux under a patched build of Wine,
+      with the sensor plumbing that makes its readings come from Linux itself.
+    </p>
+    <p>What works:</p>
+    <ul>
+      <li>The cooler is detected and driven over WinUSB</li>
+      <li>Pump and fan curves, applied and persisted</li>
+      <li>Live frames pushed to the cooler's LCD</li>
+      <li>Liquid temperature, pump and fan RPM</li>
+      <li>CPU and GPU temperature, clock and load, taken from the kernel's own hwmon
+          and DRM interfaces and usable as curve sources or on the LCD</li>
+      <li>Per-channel RGB lighting on the cooler and its fans</li>
+    </ul>
+    <p>
+      NZXT CAM itself is not included. It is downloaded from NZXT the first time the
+      application starts. This project is not affiliated with or endorsed by NZXT.
+    </p>
+    <p>
+      One step needs root on the host and cannot be done from inside the sandbox:
+      installing a udev rule so that NZXT devices are readable by your user. Run
+      "flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux
+      --udev-help" for the exact commands. If you already use liquidctl or OpenRGB,
+      their rules cover it.
+    </p>
+    <p>
+      Verified with an NZXT Kraken Elite V2. The work is generic rather than
+      model-specific, so other NZXT devices may well work, but none have been tested.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.adds39939.NzxtCamLinux.desktop</launchable>
+
+  <url type="homepage">https://github.com/adds39939/nzxt_cam_linux</url>
+  <url type="bugtracker">https://github.com/adds39939/nzxt_cam_linux/issues</url>
+  <url type="help">https://github.com/adds39939/nzxt_cam_linux/blob/main/docs/troubleshooting.md</url>
+  <url type="vcs-browser">https://github.com/adds39939/nzxt_cam_linux</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>The dashboard, with CPU and GPU telemetry read from Linux</caption>
+      <image>https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/docs/dashboard.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Pump and fan curves</caption>
+      <image>https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/docs/cooling.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Per-channel RGB lighting</caption>
+      <image>https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/docs/lighting.png</image>
+    </screenshot>
+  </screenshots>
+
+  <categories>
+    <category>System</category>
+    <category>Monitor</category>
+  </categories>
+
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </recommends>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="1.0.0" date="2026-09-02">
+      <description>
+        <p>First Flatpak release. Wine, patched, is bundled -- nothing is needed on the
+        host except a udev rule.</p>
+      </description>
+    </release>
+  </releases>
+</component>

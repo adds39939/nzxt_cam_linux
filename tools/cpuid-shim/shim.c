@@ -110,7 +110,7 @@ static float core_multiplier( unsigned core )
 /* GPU readings, refreshed into a file by the launcher. The kernel's hwmon and DRM
  * interfaces cover AMD, Intel and nouveau with no dependency at all; only NVIDIA's
  * proprietary driver registers no hwmon node, and there the launcher falls back to
- * nvidia-smi. Either way this side just reads six fields:
+ * NVML. Either way this side just reads six fields:
  *
  *   temperature C, load %, clock MHz, fan, power W, fan unit
  *

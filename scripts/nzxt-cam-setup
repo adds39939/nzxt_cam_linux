@@ -3,7 +3,8 @@
 #
 #   nzxt-cam-setup              install CAM if it is not there yet
 #   nzxt-cam-setup --reinstall  download and run the installer again over the top
-#   nzxt-cam-setup --udev-help  print the udev rule the host needs, and stop
+#   nzxt-cam-setup --udev-help  explain the udev rule the host needs, and stop
+#   nzxt-cam-setup --udev-rule  print just the rule, for piping into sudo tee
 #
 # The launcher calls this by itself the first time it runs, so this exists as a
 # separate command mainly for repairing an install:
@@ -20,25 +21,30 @@ export WINEPREFIX="${WINEPREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/wineprefix
 CAMDIR="$WINEPREFIX/drive_c/Program Files/NZXT CAM"
 TOOLS="${NZXT_CAM_TOOLS:-/app/share/nzxt-cam}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/nzxt-cam"
+APPID="io.github.adds39939.NzxtCamLinux"
 
 say() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; step_done; exit 1; }
 
+# Note that the commands below have to name the rule by piping it out of the sandbox,
+# not by copying it out of /app: /app exists only in here, and the shell the user runs
+# sudo in is on the host, where that path is nothing at all.
 udev_help() {
     cat <<HELP
 NZXT devices stay owned by root until a udev rule says otherwise, and Wine cannot open
 one without it -- CAM runs, and detects no cooler. A Flatpak cannot install the rule
-for you, so this is the one step that needs root on the host:
+for you, so this is the one step that needs root on the host.
 
-  sudo cp $TOOLS/60-nzxt-cam.rules /etc/udev/rules.d/
+Run this in a terminal on the host:
+
+  flatpak run --command=nzxt-cam-setup $APPID --udev-rule \\
+    | sudo tee /etc/udev/rules.d/60-nzxt-cam.rules >/dev/null
   sudo udevadm control --reload-rules
   sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb
 
-Or, without a copy of the file to hand:
+The rule itself is two lines, and is also in the repository at udev/60-nzxt-cam.rules:
 
-  sudo tee /etc/udev/rules.d/60-nzxt-cam.rules >/dev/null <<'RULE'
-$(cat "$TOOLS/60-nzxt-cam.rules" 2>/dev/null)
-RULE
+$(sed 's/^/  /' "$TOOLS/60-nzxt-cam.rules" 2>/dev/null | grep -v '^  #' | grep -v '^  $')
 
 Anything that already ships a rule for NZXT's vendor id has covered this -- liquidctl
 and OpenRGB both do -- which is why the problem does not show up on every machine.
@@ -49,8 +55,9 @@ REINSTALL=0
 for a in "$@"; do
     case "$a" in
         --udev-help) udev_help; exit 0 ;;
+        --udev-rule) cat "$TOOLS/60-nzxt-cam.rules"; exit 0 ;;
         --reinstall) REINSTALL=1 ;;
-        *) echo "usage: $(basename "$0") [--reinstall|--udev-help]" >&2; exit 1 ;;
+        *) echo "usage: $(basename "$0") [--reinstall|--udev-help|--udev-rule]" >&2; exit 1 ;;
     esac
 done
 
@@ -90,7 +97,14 @@ step_done() {
     exec 8>&- 2>/dev/null
     rm -f "$PROGRESS_FIFO"
     PROGRESS_FIFO=""
-    [ -n "$progress_pid" ] && wait "$progress_pid" 2>/dev/null
+    # --auto-close should have taken the dialog down on the 100 above; give it a moment
+    # and then make sure, rather than let a stuck zenity hold the install open.
+    if [ -n "$progress_pid" ]; then
+        sleep 1
+        kill "$progress_pid" 2>/dev/null
+        wait "$progress_pid" 2>/dev/null
+        progress_pid=""
+    fi
     return 0
 }
 trap 'step_done' EXIT

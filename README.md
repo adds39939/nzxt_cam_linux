@@ -69,13 +69,14 @@ install one. Without it CAM starts, looks entirely normal, and enumerates nothin
 Cooling and Lighting pages simply stay empty, which gives no hint at all where to look.
 
 ```bash
-sudo curl -Lo /etc/udev/rules.d/60-nzxt-cam.rules \
-  https://raw.githubusercontent.com/adds39939/nzxt_cam_linux/main/udev/60-nzxt-cam.rules
+flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --udev-rule \
+  | sudo tee /etc/udev/rules.d/60-nzxt-cam.rules >/dev/null
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb
 ```
 
-The app prints the same commands, using the copy of the rule inside the bundle, with:
+The rule ships inside the bundle, so that works offline; `udev/60-nzxt-cam.rules` in
+this repository is the same two lines. The app prints these commands itself with:
 
 ```bash
 flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --udev-help

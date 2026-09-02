@@ -77,9 +77,16 @@ modules:
       # the .lnk. Not building it is the end of that.
       - --disable-winemenubuilder
       - --with-mingw=x86_64-w64-mingw32-gcc
-      # Optional Wine features deliberately left out: kerberos, ODBC, samba/ntlm_auth,
-      # OpenCL and GStreamer's Wine bits. CAM uses none of them, and each is a whole
-      # extra module to build. configure notes their absence and carries on.
+      # The SDK carries OpenCL headers, so configure enables dlls/opencl, and they are
+      # then too new for it: every deprecated entry point it thunks (clUnloadCompiler,
+      # clSetUserEventStatus, ...) is compiled out of them and the build fails on the
+      # implicit declarations. Flathub's Wine pins its own OpenCL-Headers to get around
+      # that. CAM has no use for OpenCL, so turn it off rather than build a module for
+      # a DLL nothing here loads.
+      - --without-opencl
+      # Optional Wine features deliberately left out for the same reason -- CAM uses
+      # none of them, and each is a whole extra module to build: kerberos, ODBC and
+      # samba/ntlm_auth. configure notes their absence and carries on.
     make-install-args:
       - LDCONFIG=/bin/true
       - UPDATE_DESKTOP_DATABASE=/bin/true
@@ -163,7 +170,7 @@ modules:
         sha256: b5546db1155e4c718ff3d4b278573604f30dd64c3c5bfd4657cd089b823a3ac6
         x-checker-data:
           type: anitya
-          project-id: 234
+          project-id: 245
           stable-only: true
           url-template: https://deb.debian.org/debian/pool/main/c/cabextract/cabextract_$version.orig.tar.gz
 

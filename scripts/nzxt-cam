@@ -23,6 +23,7 @@ LOCK="$WINEPREFIX/.nzxt-cam.lock"
 # request_raise() for why a second launch cannot do that itself.
 RAISE="$WINEPREFIX/.nzxt-cam.raise"
 TOOLS="${NZXT_CAM_TOOLS:-/app/share/nzxt-cam}"
+APPID="io.github.adds39939.NzxtCamLinux"
 
 args=()
 for a in "$@"; do
@@ -88,6 +89,12 @@ rm -f "$RAISE"
 # Everything from here writes to that log, so trim it before it grows without end.
 [ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ] && : > "$LOG"
 
+# Started from the application menu or the autostart entry, there is no terminal for
+# any of this to go to -- and Wine writes a fixme line for every stub it hits, so it is
+# not nothing. Send it to the one file the docs tell people to read. Started from a
+# terminal, print to it as before.
+[ -t 1 ] || exec >>"$LOG" 2>&1
+
 # ------------------------------------------------------------------- first run
 
 # CAM is not redistributed -- it is downloaded from NZXT and installed into the prefix
@@ -114,13 +121,16 @@ check_device_access() {
     [ -r "$dev" ] && [ -w "$dev" ] && return 0
   done
 
+  # Not "cp $TOOLS/...": /app exists only inside the sandbox, and the shell the user
+  # runs sudo in does not have it. Pipe the rule out instead.
   echo "nzxt-cam: an NZXT device is attached but no /dev/hidraw* is accessible." >&2
-  echo "nzxt-cam: CAM will start and detect nothing. Install the udev rule:" >&2
-  echo "nzxt-cam:   sudo cp $TOOLS/60-nzxt-cam.rules /etc/udev/rules.d/" >&2
+  echo "nzxt-cam: CAM will start and detect nothing. On the host, run:" >&2
+  echo "nzxt-cam:   flatpak run --command=nzxt-cam-setup $APPID --udev-rule \\" >&2
+  echo "nzxt-cam:     | sudo tee /etc/udev/rules.d/60-nzxt-cam.rules >/dev/null" >&2
   echo "nzxt-cam:   sudo udevadm control --reload-rules" >&2
   echo "nzxt-cam:   sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=usb" >&2
   notify-send -a "NZXT CAM" -u critical "NZXT CAM cannot reach your device" \
-    "A udev rule is needed. Run:  flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --udev-help" \
+    "A udev rule is needed. Run:  flatpak run --command=nzxt-cam-setup $APPID --udev-help" \
     2>/dev/null || true
 }
 check_device_access
@@ -137,6 +147,7 @@ check_device_access
 # kscreen-doctor and friends are not in the sandbox, so the scale comes from the
 # settings portal, which both GNOME and KDE answer. Override it for good with:
 #   flatpak override --user --env=NZXT_CAM_SCALE=1.5 io.github.adds39939.NzxtCamLinux
+
 # gdbus prints a ReadOne result as its full variant -- "(<uint32 1>,)" for an integer,
 # "(<1.0>,)" for a double. Unwrap it and drop the type name; grepping for digits would
 # find the 32 in "uint32".

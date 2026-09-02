@@ -11,8 +11,6 @@
 [![Wine](https://img.shields.io/badge/wine-11.16%20(bundled)-51007A?style=flat-square&labelColor=1c1c1e)](WINE_VERSION)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20LGPL--2.1-6b7280?style=flat-square&labelColor=1c1c1e)](#licensing)
 
-<br>
-
 [![Download](https://img.shields.io/badge/Download-nzxt--cam--linux.flatpak-51007A?style=for-the-badge&labelColor=1c1c1e&logo=flatpak&logoColor=white)](https://github.com/adds39939/nzxt_cam_linux/releases/latest)
 
 [**Install**](#install) · [The udev rule](#the-one-thing-that-needs-root) · [GPU readings](#gpu-readings) · [Start on login](#start-on-login) · [What works](#what-works) · [Build it yourself](#building-it-yourself) · [Troubleshooting](docs/troubleshooting.md)

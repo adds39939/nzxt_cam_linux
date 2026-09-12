@@ -281,7 +281,11 @@ apply_device_fixups() {
   fi
   # Wine registers the GPU but leaves its PCI location unset, and CAM drops any
   # adapter whose BusNumber/Address it cannot read. Fill them in from the host.
-  [ -f "$TOOLS/gpu-pci-fixup.exe" ] && wine "$TOOLS/gpu-pci-fixup.exe" >/dev/null 2>&1
+  # Keep what it prints -- it is one line per adapter, and it is the only place that
+  # says which card was matched to which PCI address, or that none was. Discarding it
+  # is what made a GPU that stopped being reported look like it had no cause at all.
+  # Wine's own stderr is not worth the same, so that half still goes nowhere.
+  [ -f "$TOOLS/gpu-pci-fixup.exe" ] && wine "$TOOLS/gpu-pci-fixup.exe" 2>/dev/null
   return 0
 }
 
@@ -314,6 +318,38 @@ cam_log_path() {
 
 # ------------------------------------------------------------------- shutdown
 
+# Nothing in the sandbox may outlive this script. bwrap is PID 1 in here and reaps
+# until the namespace is empty, not until its first child exits, so one straggler keeps
+# the whole sandbox on its feet -- and at logout that straggler is what the machine
+# waits for. systemd stops the app's scope, gives it ninety seconds to empty, then
+# SIGKILLs whatever is left, which is ninety seconds of "a stop job is running" between
+# pressing shut down and the machine going off.
+#
+# There is reliably one straggler. The winedevice.exe that hosts winebus.sys and
+# wineusb.sys installs a SIGTERM handler and then does nothing with it, so the SIGTERM
+# systemd sends to every process in the scope does not move it. The wineserver would
+# take it down, but the wineserver has had that same SIGTERM and has already gone by
+# the time this trap runs -- which leaves nothing at all that owns that process.
+#
+# kill(-1) is "every process this one may signal", which the kernel reads as all of
+# them bar PID 1 and the caller: exactly the sandbox and nothing outside it. That is
+# only true while there IS a sandbox, though. Run outside one -- from a checkout, on a
+# developer's machine -- the same call is the whole login session, so make sure of PID
+# 1 before reaching for it.
+reap_sandbox() {
+  [ "$(cat /proc/1/comm 2>/dev/null)" = bwrap ] || return 0
+  # ESRCH: nothing besides this shell is left, which is the normal-quit case.
+  kill -TERM -1 2>/dev/null || return 0
+  # Zombies still answer to kill -0, and the children signalled above become ours until
+  # this shell exits, so this poll usually runs out rather than clearing. That is fine:
+  # it is a second at the far end of a session, against ninety without it.
+  for _ in 1 2 3 4; do
+    sleep 0.25
+    kill -0 -1 2>/dev/null || return 0
+  done
+  kill -KILL -1 2>/dev/null || true
+}
+
 cleanup() {
   trap - EXIT INT TERM
   [ -n "${poller:-}" ] && kill "$poller" 2>/dev/null
@@ -322,13 +358,18 @@ cleanup() {
     kill "$cam" 2>/dev/null
     for _ in 1 2 3 4 5; do kill -0 "$cam" 2>/dev/null || break; sleep 1; done
   fi
-  wineserver -k >/dev/null 2>&1 || true
+  # Bounded: a wineserver that has wedged must not become the thing holding up the
+  # shutdown, and reap_sandbox below settles it either way.
+  timeout 10 wineserver -k >/dev/null 2>&1 || true
   rm -f "$RAISE"
 
   # Once more on the way out, now that stopping the wineserver has flushed the
   # registry: a "start with Windows" flipped during this session is on disk by this
   # point, and picking it up here is what stops the change waiting for the next launch.
   timeout 10 nzxt-cam-autostart sync >/dev/null 2>&1 || true
+
+  # Last, and nothing after it -- it takes the rest of the sandbox with it.
+  reap_sandbox
 }
 trap cleanup EXIT INT TERM
 
@@ -352,6 +393,10 @@ poller=$!
 # Answer the raise requests a second launch leaves behind. Runs in this sandbox, so
 # it reaches this instance's wineserver and CAM's single-instance lock.
 raise_watcher() {
+  # Bash clears inherited traps in a background subshell, but say so anyway: cleanup
+  # ends in a kill(-1), and a second copy of it running in here would take the launcher
+  # down mid-shutdown.
+  trap - EXIT INT TERM
   while :; do
     if [ -e "$RAISE" ]; then
       rm -f "$RAISE"

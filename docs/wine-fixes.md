@@ -553,8 +553,14 @@ which maps the sections from it copy-on-write. Their pages are then shared like 
 other file mapping:
 
 ```
-140001000-149285000 r-xp 00001000 00:01 124566      /memfd:wine-mapping (deleted)
+140001000-149285000 r-xp 00001000 103:07 209191258   /var/data/wineprefix/#209191258 (deleted)
 ```
+
+The temp file is an unnamed file in the prefix directory (`O_TMPFILE`), not memory, so
+it behaves like any executable on disk: only the pages some process uses are in memory,
+and the kernel can drop those and read them back. A copy in memory would hold every
+page of every image, used or not -- 236 MB here, 67 MB of which nothing ever touched.
+Where the prefix's filesystem cannot make such a file, it is a memfd.
 
 The copy is kept per file, next to the one Wine already keeps for shared PE sections,
 and lives as long as anything has the image mapped. Wine refuses to open a mapped image
@@ -590,27 +596,42 @@ They are zero, but writing them faults in 280 MB of table.
 (`madvise(MADV_DONTNEED)`) instead of writing them. They read back as zero without
 being resident until something is committed in that range.
 
+### 28. Direct3D buffers came in 64 MB pieces
+
+**Symptom:** CAM's GPU process had 182 MB mapped from `/dev/nvidiactl`, 131 MB of it in
+two 64 MB mappings that were resident from end to end.
+
+**Cause:** Chromium draws through Direct3D 11, which Wine implements in wined3d on top
+of OpenGL. wined3d sub-allocates buffers out of 64 MB chunks, at least one for each
+kind of memory in use, and keeps each chunk mapped -- which NVIDIA's driver backs with
+pinned system memory. A window that draws a few panels uses a sliver of one.
+
+**Fix:** patch 24 makes the chunks 4 MB. The allocator keeps its 4 KB minimum block,
+so every allocation is aligned as before; a buffer over 2 MB gets memory of its own,
+as one over 32 MB did before.
+
 ### What it adds up to
 
 PSS of every process in the sandbox, from `/proc/<pid>/smaps_rollup`, with CAM idle in
-the tray. The total also counts the part of the wineserver's shared copies (236 MB in
-all) that no process has mapped.
+the tray.
 
 | Process | Before | After |
 | --- | ---: | ---: |
-| Renderer | 743 MB | 302 MB |
-| Main | 640 MB | 154 MB |
-| GPU | 533 MB | 340 MB |
-| Network service | 205 MB | 33 MB |
-| Crash handler | 202 MB | 14 MB |
-| **Total** | **2,576 MB** | **1,135 MB** |
+| Renderer | 743 MB | 316 MB |
+| GPU | 533 MB | 215 MB |
+| Main | 640 MB | 180 MB |
+| Network service | 205 MB | -- |
+| Crash handler | 202 MB | 21 MB |
+| **Total** | **2,576 MB** | **964 MB** |
 
-Patches 21 and 22 together took it to 1,767 MB, and 23 the rest of the way.
+Patches 21 and 22 together took it to 1,767 MB and 23 to 1,135 MB, with the copies of
+21 held in memory. Moving them to disk, and 24, took it the rest of the way, along with
+one change in the launcher: CAM starts with `--enable-features=NetworkServiceInProcess2`,
+which runs Chromium's network service inside the main process rather than in a process
+of its own.
 
-Most of what is left in the GPU process is NVIDIA's driver: 187 MB is mapped from
-`/dev/nvidiactl`. Starting CAM with `--disable-gpu` takes about 120 MB more, but not the
-driver -- Chromium still enumerates the GPU through wined3d, which loads it -- and CAM
-then draws on the CPU, so it is not done by default.
+What is left of NVIDIA's driver in the GPU process is 58 MB mapped from
+`/dev/nvidiactl`, down from 182 MB.
 
 
 ## The USB device tree

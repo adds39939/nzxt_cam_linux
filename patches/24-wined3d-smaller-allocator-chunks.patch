@@ -1,0 +1,24 @@
+diff --git dlls/wined3d/wined3d_private.h dlls/wined3d/wined3d_private.h
+index cb1ca03..a1d2db6 100644
+--- dlls/wined3d/wined3d_private.h
++++ dlls/wined3d/wined3d_private.h
+@@ -3151,11 +3151,16 @@ static inline struct wined3d_device_no3d *wined3d_device_no3d(struct wined3d_dev
+     return CONTAINING_RECORD(device, struct wined3d_device_no3d, d);
+ }
+ 
+-#define WINED3D_ALLOCATOR_CHUNK_SIZE        (64 * 1024 * 1024)
+-#define WINED3D_ALLOCATOR_CHUNK_ORDER_COUNT 15
++/* Each memory type in use costs at least one chunk, and with GL the chunks are
++ * persistently mapped, which many drivers back with pinned system memory. 4MB keeps an
++ * application that draws little from holding a 64MB chunk per memory type; the order count
++ * keeps the minimum block, and so the alignment every block has, at 4KB. Allocations over
++ * half a chunk get memory of their own. */
++#define WINED3D_ALLOCATOR_CHUNK_SIZE        (4 * 1024 * 1024)
++#define WINED3D_ALLOCATOR_CHUNK_ORDER_COUNT 11
+ #define WINED3D_ALLOCATOR_MIN_BLOCK_SIZE    (WINED3D_ALLOCATOR_CHUNK_SIZE >> (WINED3D_ALLOCATOR_CHUNK_ORDER_COUNT - 1))
+ #define WINED3D_SLAB_BO_MIN_OBJECT_ALIGN    16
+-#define WINED3D_RETIRED_BO_SIZE_THRESHOLD   (64 * 1024 * 1024)
++#define WINED3D_RETIRED_BO_SIZE_THRESHOLD   WINED3D_ALLOCATOR_CHUNK_SIZE
+ 
+ struct wined3d_allocator_chunk
+ {

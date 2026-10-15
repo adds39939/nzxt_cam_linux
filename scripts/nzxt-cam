@@ -492,7 +492,9 @@ while :; do
   offset=0
   [ -n "$cam_log" ] && offset=$(wc -c < "$cam_log")
 
-  wine "NZXT CAM.exe" "$@" &
+  # Chromium gives its network stack a process of its own, which here is ~25 MB spent on
+  # update checks. Run it inside CAM's main process instead.
+  wine "NZXT CAM.exe" --enable-features=NetworkServiceInProcess2 "$@" &
   cam=$!
 
   crashed=0

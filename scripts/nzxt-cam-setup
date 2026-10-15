@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # First run: build the prefix and install NZXT CAM into it.
 #
-#   nzxt-cam-setup              install CAM if it is not there yet
+#   nzxt-cam-setup              install CAM if it is not there yet, and put the CPUID
+#                               shim back if an update of CAM has replaced it
 #   nzxt-cam-setup --reinstall  download and run the installer again over the top
 #   nzxt-cam-setup --udev-help  explain the udev rule the host needs, and stop
 #   nzxt-cam-setup --udev-rule  print just the rule, for piping into sudo tee
 #
-# The launcher calls this by itself the first time it runs, so this exists as a
+# The launcher calls this by itself every time it starts CAM, so this exists as a
 # separate command mainly for repairing an install:
 #   flatpak run --command=nzxt-cam-setup io.github.adds39939.NzxtCamLinux --reinstall
 #
@@ -25,6 +26,13 @@ APPID="io.github.adds39939.NzxtCamLinux"
 
 say() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; step_done; exit 1; }
+
+# Installed means the files are there, not just the directory. CAM's installer empties
+# the directory before it unpacks the new version into it, so an update that was cut
+# off in between leaves the directory and nothing in it.
+cam_installed() {
+    [ -f "$CAMDIR/NZXT CAM.exe" ] && [ -f "$CAMDIR/resources/app.asar" ]
+}
 
 # Note that the commands below have to name the rule by piping it out of the sandbox,
 # not by copying it out of /app: /app exists only in here, and the shell the user runs
@@ -60,11 +68,6 @@ for a in "$@"; do
         *) echo "usage: $(basename "$0") [--reinstall|--udev-help|--udev-rule]" >&2; exit 1 ;;
     esac
 done
-
-if [ -d "$CAMDIR" ] && [ "$REINSTALL" = 0 ]; then
-    say "CAM is already installed in $WINEPREFIX"
-    exit 0
-fi
 
 # ---------------------------------------------------------------- progress UI
 
@@ -108,6 +111,39 @@ step_done() {
     return 0
 }
 trap 'step_done' EXIT
+
+# --------------------------------------------------------------------- the shim
+
+# CAM reads CPU/GPU telemetry through CPUID's cpuidsdk64.dll, which needs a ring-0
+# driver that cannot work under Wine. Keep the genuine SDK next to the shim, which
+# forwards to it and fills in the readings from Linux. See tools/cpuid-shim.
+#
+# This is not only a first-run step. CAM updates itself, and its installer replaces the
+# whole install directory: afterwards the SDK is CPUID's again, and the genuine copy
+# that was set aside has gone with everything else. That is what makes it safe to take
+# whatever is there as genuine when no copy exists. Comparing against the shim, rather
+# than only asking whether a copy exists, also brings in a newer shim from an update of
+# the Flatpak itself.
+install_shim() {
+    local cpuid="$CAMDIR/resources/app.asar.unpacked/node_modules/@nzxt/cam-core/dist/common/cpuid"
+    if [ ! -d "$cpuid" ] || [ ! -f "$TOOLS/cpuidsdk64_shim.dll" ]; then
+        echo "    WARNING: cpuid directory not found; CPU temperature will read n/a" >&2
+        return 0
+    fi
+    cmp -s "$TOOLS/cpuidsdk64_shim.dll" "$cpuid/cpuidsdk64.dll" && return 0
+    step "Installing the CPUID SDK shim (CPU temperature and clocks)"
+    # Only move the original aside once, so re-running never shims the shim.
+    if [ ! -f "$cpuid/cpuidsdk64_real.dll" ]; then
+        cp "$cpuid/cpuidsdk64.dll" "$cpuid/cpuidsdk64_real.dll"
+    fi
+    cp "$TOOLS/cpuidsdk64_shim.dll" "$cpuid/cpuidsdk64.dll"
+}
+
+if cam_installed && [ "$REINSTALL" = 0 ]; then
+    say "CAM is already installed in $WINEPREFIX"
+    install_shim
+    exit 0
+fi
 
 # Let Wine finish what it is doing, but never wait indefinitely: "wineserver -w" waits
 # for every process in the prefix to exit, so anything holding a window open -- CAM
@@ -180,24 +216,9 @@ sleep 3                                        # let the last writes land
 wineserver -k >/dev/null 2>&1 || true
 wait "$installer" 2>/dev/null || true
 
-[ -d "$CAMDIR" ] || die "the installer did not put CAM in $CAMDIR"
+cam_installed || die "the installer did not put CAM in $CAMDIR"
 
-# --------------------------------------------------------------------- the shim
-
-# CAM reads CPU/GPU telemetry through CPUID's cpuidsdk64.dll, which needs a ring-0
-# driver that cannot work under Wine. Keep the genuine SDK next to the shim, which
-# forwards to it and fills in the readings from Linux. See tools/cpuid-shim.
-step "Installing the CPUID SDK shim (CPU temperature and clocks)"
-CPUID="$CAMDIR/resources/app.asar.unpacked/node_modules/@nzxt/cam-core/dist/common/cpuid"
-if [ -d "$CPUID" ] && [ -f "$TOOLS/cpuidsdk64_shim.dll" ]; then
-    # Only move the original aside once, so re-running never shims the shim.
-    if [ ! -f "$CPUID/cpuidsdk64_real.dll" ]; then
-        cp "$CPUID/cpuidsdk64.dll" "$CPUID/cpuidsdk64_real.dll"
-    fi
-    cp "$TOOLS/cpuidsdk64_shim.dll" "$CPUID/cpuidsdk64.dll"
-else
-    echo "    WARNING: cpuid directory not found; CPU temperature will read n/a" >&2
-fi
+install_shim
 
 step "Setting guest mode (skips the sign-in screen)"
 for user in "$WINEPREFIX"/drive_c/users/*/; do

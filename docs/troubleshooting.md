@@ -33,6 +33,13 @@ tail -f $PFX/nzxt-cam.log
 Only one launcher runs at a time — each supervises CAM and refreshes the GPU readings,
 so a second would fight the first.
 
+**CAM closes while it is updating itself** — that is the update. NZXT's installer has
+to replace CAM, so CAM quits, the installer runs, and the launcher starts the new
+version once it is done; the log says `CAM quit to install an update`. Older builds of
+the launcher stopped the installer partway through instead, which could leave CAM
+uninstalled — if that happened to you, the next start notices and reinstalls it. Your
+settings are kept either way.
+
 **CAM starts fine but no NZXT device is ever detected** — the cooler is owned by root.
 Wine reaches it through `/dev/hidraw*`, and udev leaves those root-only unless a rule
 says otherwise, so CAM enumerates nothing: the window looks completely normal while

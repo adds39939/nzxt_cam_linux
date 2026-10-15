@@ -98,11 +98,11 @@ rm -f "$RAISE"
 # ------------------------------------------------------------------- first run
 
 # CAM is not redistributed -- it is downloaded from NZXT and installed into the prefix
-# the first time this runs.
-if [ ! -d "$CAMDIR" ]; then
-  nzxt-cam-setup || { echo "nzxt-cam: setup failed -- see $LOG" >&2; exit 1; }
-fi
-[ -d "$CAMDIR" ] || { echo "nzxt-cam: CAM is not installed" >&2; exit 1; }
+# the first time this runs. Setup runs on every start, not just the first: CAM updates
+# itself, and an update puts CPUID's SDK back over the shim -- or, cut off halfway,
+# leaves no CAM at all. When everything is in place it returns straight away.
+nzxt-cam-setup || { echo "nzxt-cam: setup failed -- see $LOG" >&2; exit 1; }
+[ -f "$CAMDIR/NZXT CAM.exe" ] || { echo "nzxt-cam: CAM is not installed" >&2; exit 1; }
 
 # -------------------------------------------------------------- device access
 
@@ -316,6 +316,71 @@ cam_log_path() {
   return 1
 }
 
+# What CAM has logged since this run started it.
+cam_log_since() {
+  [ -n "${cam_log:-}" ] && tail -c "+$((offset + 1))" "$cam_log" 2>/dev/null
+}
+
+# -------------------------------------------------------------------- updates
+
+# CAM updates itself the electron-updater way: it downloads NZXT's installer into
+# "nzxt cam-updater\pending", starts it, and quits so the installer can replace it.
+# From here that looks exactly like CAM being closed, and what follows a close is the
+# cleanup below -- which stops the wineserver and then everything else in the sandbox,
+# the installer with it. The installer removes the old version before it unpacks the
+# new one, so cut off in between it leaves an empty install directory and a CAM that
+# will not start again.
+#
+# So when CAM goes, check whether it went to update, and if so let the installer
+# finish. Look for it by the file it runs from, not by its command line: Wine writes a
+# process's Windows command line over its Unix one, but only as much of it as fits, and
+# when NZXT's elevation service starts the installer all that survives of a path that
+# long is "--updated --force-run". Every process maps its own executable, whatever its
+# command line says, and nothing else maps this one.
+updater_running() {
+  grep -q -s -i 'cam-updater/pending/' /proc/[0-9]*/maps
+}
+
+# electron-updater logs "Install: isSilent: ..., isForceRunAfter: ..." as it starts the
+# installer, and either "Update installer has already been triggered" (updating on
+# start) or "Auto install update on quit" (the user quit with an update waiting) as CAM
+# goes. The log is the better witness of the two: CAM can hand the installer to NZXT's
+# elevation service, and does not wait to see it running before it quits.
+update_started() {
+  cam_log_since | grep -q -e 'Update installer has already been triggered' \
+                          -e 'Auto install update on quit' && return 0
+  updater_running
+}
+
+# Wait for the installer, then stop the prefix. Succeeds when CAM is meant to come back
+# afterwards: true for an update on start, which passes --force-run, and false for one
+# installed because the user quit -- they wanted CAM closed, and it stays closed.
+finish_update() {
+  local relaunch=0 waited=0
+  cam_log_since | grep -q 'isForceRunAfter: true' && relaunch=1
+  echo "nzxt-cam: CAM quit to install an update -- waiting for the installer to finish"
+
+  while ! updater_running && [ "$waited" -lt 20 ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  waited=0
+  while updater_running; do
+    if [ "$waited" -ge 900 ]; then
+      echo "nzxt-cam: CAM's installer is still running after 15 minutes -- stopping it" >&2
+      break
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+
+  # With --force-run the installer starts CAM again itself -- outside this script, and
+  # before the shim is back in place. Take that copy down with the rest of the prefix;
+  # the main loop starts its own.
+  wineserver -k 2>/dev/null || true
+  [ "$relaunch" = 1 ]
+}
+
 # ------------------------------------------------------------------- shutdown
 
 # Nothing in the sandbox may outlive this script. bwrap is PID 1 in here and reaps
@@ -410,12 +475,15 @@ raise_watcher() {
 raise_watcher &
 raiser=$!
 
-cd "$CAMDIR" || exit 1
 apply_scale
 apply_tray_policy
 
 attempt=0
+updates=0
 while :; do
+  # Every time round, not once: an update replaces the install directory, and this
+  # shell would otherwise still be sitting in the one that was deleted.
+  cd "$CAMDIR" || exit 1
   reset_fatal_route
   apply_device_fixups
 
@@ -430,8 +498,7 @@ while :; do
   crashed=0
   while kill -0 "$cam" 2>/dev/null; do
     [ -n "$cam_log" ] || cam_log="$(cam_log_path || true)"
-    if [ -n "$cam_log" ] &&
-       tail -c "+$((offset + 1))" "$cam_log" 2>/dev/null | grep -q "Crash threshold reached"; then
+    if cam_log_since | grep -q "Crash threshold reached"; then
       crashed=1
       break
     fi
@@ -448,5 +515,21 @@ while :; do
   fi
 
   wait "$cam" 2>/dev/null
+
+  if update_started; then
+    finish_update || break                 # installed on quit; CAM stays closed
+    # Bounded, so that an update that never takes cannot have CAM quitting to install
+    # it again and again for as long as the session lasts.
+    if [ "$updates" -ge 2 ]; then
+      echo "nzxt-cam: CAM wants to update again straight after updating -- not restarting it" >&2
+      break
+    fi
+    updates=$((updates + 1))
+    # Puts the shim back over the SDK the update restored, and reinstalls CAM if the
+    # update did not leave a working one.
+    nzxt-cam-setup || { echo "nzxt-cam: setup failed after CAM's update -- see $LOG" >&2; break; }
+    echo "nzxt-cam: CAM has updated -- starting it again"
+    continue
+  fi
   break
 done

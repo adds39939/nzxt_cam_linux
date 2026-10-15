@@ -119,8 +119,9 @@ modules:
       - type: archive
         url: https://dl.winehq.org/wine/source/11.x/wine-11.16.tar.xz
         sha256: c66e2090343dcd727f7f7fd2f87ee0bfb0b118790c1d745ab7b8a4c3a4197f2f
-      # The twenty patches this project exists for. What each one fixes, and why, is
-      # in docs/wine-fixes.md. They are -p0 patches, hence strip-components: 0.
+      # The patches this project exists for. What each one fixes, and why, is in
+      # docs/wine-fixes.md: 01-20 make CAM work, 21-23 cut how much memory it takes.
+      # They are -p0 patches, hence strip-components: 0.
       - type: patch
         path: ../patches/01-propsys-hid-properties.patch
         strip-components: 0
@@ -180,6 +181,15 @@ modules:
         strip-components: 0
       - type: patch
         path: ../patches/20-explorer-systray-icon-window-title.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/21-share-unaligned-image-sections.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/22-ntdll-disable-transparent-huge-pages.patch
+        strip-components: 0
+      - type: patch
+        path: ../patches/23-ntdll-sparse-page-protection-table.patch
         strip-components: 0
 
   # Needed by winetricks to unpack the corefonts cabs on first run.

@@ -1,0 +1,53 @@
+diff --git dlls/ntdll/unix/virtual.c dlls/ntdll/unix/virtual.c
+index 715844a..e88cfc5 100644
+--- dlls/ntdll/unix/virtual.c
++++ dlls/ntdll/unix/virtual.c
+@@ -1181,6 +1181,32 @@ static SIZE_T get_vprot_range_size( char *base, SIZE_T size, BYTE mask, BYTE *vp
+     return size;
+ }
+ 
++/***********************************************************************
++ *           fill_page_vprot
++ *
++ * Fill a run of page protection bytes within one block of the table.
++ */
++static void fill_page_vprot( BYTE *ptr, BYTE vprot, size_t size )
++{
++#ifdef __linux__
++    /* Reserving and releasing memory set the bytes to zero, and a large reservation
++     * covers a lot of table: a terabyte of address space takes 256MB of it. Drop the whole
++     * pages instead of writing them, so that they read as zero without being faulted in. */
++    BYTE *start = ROUND_ADDR( ptr + host_page_mask, host_page_mask );
++    BYTE *end = ROUND_ADDR( ptr + size, host_page_mask );
++
++    if (!vprot && start < end)
++    {
++        memset( ptr, 0, start - ptr );
++        madvise( start, end - start, MADV_DONTNEED );
++        memset( end, 0, ptr + size - end );
++        return;
++    }
++#endif
++    memset( ptr, vprot, size );
++}
++
++
+ /***********************************************************************
+  *           set_page_vprot
+  *
+@@ -1195,12 +1221,12 @@ static void set_page_vprot( const void *addr, size_t size, BYTE vprot )
+     while (idx >> pages_vprot_shift != end >> pages_vprot_shift)
+     {
+         size_t dir_size = pages_vprot_mask + 1 - (idx & pages_vprot_mask);
+-        memset( pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask), vprot, dir_size );
++        fill_page_vprot( pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask), vprot, dir_size );
+         idx += dir_size;
+     }
+-    memset( pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask), vprot, end - idx );
++    fill_page_vprot( pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask), vprot, end - idx );
+ #else
+-    memset( pages_vprot + idx, vprot, end - idx );
++    fill_page_vprot( pages_vprot + idx, vprot, end - idx );
+ #endif
+ }
+ 

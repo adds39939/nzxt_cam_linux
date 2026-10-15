@@ -1,0 +1,29 @@
+diff --git dlls/ntdll/unix/virtual.c dlls/ntdll/unix/virtual.c
+index 8906cb5..715844a 100644
+--- dlls/ntdll/unix/virtual.c
++++ dlls/ntdll/unix/virtual.c
+@@ -60,6 +60,9 @@
+ #endif
+ #include <unistd.h>
+ #include <dlfcn.h>
++#ifdef HAVE_SYS_PRCTL_H
++# include <sys/prctl.h>
++#endif
+ #ifdef HAVE_VALGRIND_VALGRIND_H
+ # include <valgrind/valgrind.h>
+ #endif
+@@ -3686,6 +3689,14 @@ void virtual_init(void)
+     pthread_mutex_init( &virtual_mutex, &attr );
+     pthread_mutexattr_destroy( &attr );
+ 
++#ifdef PR_SET_THP_DISABLE
++    /* Windows commits memory a page at a time, and Windows applications reserve large
++     * regions to commit into sparsely. With transparent huge pages set to "always", the
++     * first page touched in each 2MB of a committed region brings in a whole huge page,
++     * so opt out. This is inherited by child processes and the wineserver. */
++    prctl( PR_SET_THP_DISABLE, 1, 0, 0, 0 );
++#endif
++
+ #ifdef __aarch64__
+     host_page_size = sysconf( _SC_PAGESIZE );
+     host_page_mask = host_page_size - 1;

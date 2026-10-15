@@ -528,6 +528,91 @@ deleted from that line by hand. Plasma reads the file at login, so log out and b
 rather than expecting the edit to take hold live.
 
 
+### 25. Every process carried its own copy of CAM's executable
+
+**Symptom:** CAM took 2.6 GB. Each of its Electron processes -- main, renderer, GPU,
+network service, crash handler -- held 175-210 MB of private memory before it had done
+any work; the crash handler, a few megabytes on Windows, took 200.
+
+**Cause:** `NZXT CAM.exe` is linked with 512-byte file alignment, as nearly every
+Windows binary is, so its sections start at file offsets that are not page-aligned:
+`.text` is at 0x400 in the file and 0x1000 in memory. `mmap()` cannot map that, so Wine
+falls back to `pread()`-ing each section into anonymous memory -- a private copy in
+every process that loads the image, where Windows shares one between them all. In
+`/proc/<pid>/smaps` it is the anonymous, executable mapping at the image base:
+
+```
+140001000-149285000 r-xp 00000000 00:00 0          Rss: 150032 kB  Anonymous: 150032 kB
+```
+
+Every DLL CAM ships (`libGLESv2.dll`, `ffmpeg.dll`, ...) was loaded the same way.
+
+**Fix:** patch 21 has the wineserver write those sections once into a temp file laid
+out the way the image is in memory, and hand it to every process mapping the image,
+which maps the sections from it copy-on-write. Their pages are then shared like any
+other file mapping:
+
+```
+140001000-149285000 r-xp 00001000 00:01 124566      /memfd:wine-mapping (deleted)
+```
+
+The copy is kept per file, next to the one Wine already keeps for shared PE sections,
+and lives as long as anything has the image mapped. Wine refuses to open a mapped image
+for writing, so it cannot go stale.
+
+### 26. Transparent huge pages, 2 MB at a time
+
+**Symptom:** 1.6 GB of CAM's 2.2 GB of anonymous memory was in transparent huge pages
+(`AnonHugePages` in `/proc/<pid>/smaps_rollup`). Most of that was the copies and the
+table that 25 and 27 get rid of, but not all of it.
+
+**Cause:** Arch's kernel sets `/sys/kernel/mm/transparent_hugepage/enabled` to
+`always`. Windows programs commit memory a page at a time -- Chromium's allocators
+reserve large regions and commit into them sparsely -- but with THP on `always` the
+first touch anywhere in a 2 MB-aligned stretch of a committed region brings in a whole
+2 MB page, and khugepaged goes on to collapse more of them for as long as CAM runs.
+
+**Fix:** patch 22 has every Wine process opt out with `prctl(PR_SET_THP_DISABLE)`,
+which child processes and the wineserver inherit. With 21 and 23 and without 22, CAM
+settles at 1,204 MB; with 22, at 1,135 MB.
+
+### 27. A terabyte of reserved address space cost 280 MB
+
+**Symptom:** with those two fixed, the renderer and the main process each still had
+about 280 MB resident that was entirely zero.
+
+**Cause:** Wine keeps every page's protection in a table, one byte per 4 KB page of
+address space. V8 reserves its sandbox up front -- about 1.16 TB in CAM's main and
+renderer processes -- and reserving writes the protection bytes for the whole range.
+They are zero, but writing them faults in 280 MB of table.
+
+**Fix:** patch 23 drops whole pages of the table that are being set to zero
+(`madvise(MADV_DONTNEED)`) instead of writing them. They read back as zero without
+being resident until something is committed in that range.
+
+### What it adds up to
+
+PSS of every process in the sandbox, from `/proc/<pid>/smaps_rollup`, with CAM idle in
+the tray. The total also counts the part of the wineserver's shared copies (236 MB in
+all) that no process has mapped.
+
+| Process | Before | After |
+| --- | ---: | ---: |
+| Renderer | 743 MB | 302 MB |
+| Main | 640 MB | 154 MB |
+| GPU | 533 MB | 340 MB |
+| Network service | 205 MB | 33 MB |
+| Crash handler | 202 MB | 14 MB |
+| **Total** | **2,576 MB** | **1,135 MB** |
+
+Patches 21 and 22 together took it to 1,767 MB, and 23 the rest of the way.
+
+Most of what is left in the GPU process is NVIDIA's driver: 187 MB is mapped from
+`/dev/nvidiactl`. Starting CAM with `--disable-gpu` takes about 120 MB more, but not the
+driver -- Chromium still enumerates the GPU through wined3d, which loads it -- and CAM
+then draws on the CPU, so it is not done by default.
+
+
 ## The USB device tree
 
 Not a patch, but the same kind of gap. CAM correlates a HID interface with its

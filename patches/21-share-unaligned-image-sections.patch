@@ -1,0 +1,385 @@
+diff --git dlls/ntdll/unix/unix_private.h dlls/ntdll/unix/unix_private.h
+index c8ca97d..a2ab418 100644
+--- dlls/ntdll/unix/unix_private.h
++++ dlls/ntdll/unix/unix_private.h
+@@ -160,6 +160,7 @@ struct async_fileio
+ struct pe_mapping_info
+ {
+     HANDLE               shared_file;
++    HANDLE               aligned_file;
+     UNICODE_STRING       nt_name;
+     ANSI_STRING          exp_name;
+     void                *version_res;
+diff --git dlls/ntdll/unix/virtual.c dlls/ntdll/unix/virtual.c
+index d6038c4..8906cb5 100644
+--- dlls/ntdll/unix/virtual.c
++++ dlls/ntdll/unix/virtual.c
+@@ -3034,7 +3034,7 @@ static IMAGE_BASE_RELOCATION *process_relocation_block( char *page, IMAGE_BASE_R
+  */
+ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRING *nt_name, int fd,
+                                      struct pe_image_info *image_info, USHORT machine,
+-                                     int shared_fd, BOOL removable )
++                                     int shared_fd, int aligned_fd, BOOL removable )
+ {
+     IMAGE_DOS_HEADER *dos;
+     IMAGE_NT_HEADERS *nt;
+@@ -3112,6 +3112,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
+     {
+         static const SIZE_T sector_align = 0x1ff;
+         SIZE_T map_size, file_start, file_size, end;
++        BOOL aligned_copy;
+ 
+         if (!sec[i].Misc.VirtualSize)
+             map_size = ROUND_SIZE( 0, sec[i].SizeOfRawData, align_mask );
+@@ -3171,21 +3172,26 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
+ 
+         /* Note: if the section is not aligned properly map_file_into_view will magically
+          *       fall back to read(), so we don't need to check anything here.
++         *       The server provides a page-aligned copy of such sections where it can,
++         *       which lets all processes share them instead of each reading in its own.
+          */
++        aligned_copy = aligned_fd != -1 && (file_start & host_page_mask);
+         end = file_start + file_size;
+         if (sec[i].PointerToRawData >= st.st_size ||
+             end > ((st.st_size + sector_align) & ~sector_align) ||
+             end < file_start ||
+-            map_file_into_view( view, fd, sec[i].VirtualAddress, file_size, file_start,
++            map_file_into_view( view, aligned_copy ? aligned_fd : fd, sec[i].VirtualAddress, file_size,
++                                aligned_copy ? sec[i].VirtualAddress : file_start,
+                                 VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY,
+-                                removable ) != STATUS_SUCCESS)
++                                removable && !aligned_copy ) != STATUS_SUCCESS)
+         {
+             ERR_(module)( "Could not map %s section %.8s, file probably truncated\n",
+                           debugstr_us(nt_name), sec[i].Name );
+             goto done;
+         }
+ 
+-        if (file_size & align_mask)
++        /* the copy is already zero-filled past the section data */
++        if ((file_size & align_mask) && !aligned_copy)
+         {
+             end = ROUND_SIZE( 0, file_size, align_mask );
+             if (end > map_size) end = map_size;
+@@ -3279,6 +3285,7 @@ done:
+ static void free_pe_mapping_info( struct pe_mapping_info *info )
+ {
+     if (info->shared_file) NtClose( info->shared_file );
++    if (info->aligned_file) NtClose( info->aligned_file );
+     free( info );
+ }
+ 
+@@ -3308,6 +3315,7 @@ static unsigned int get_mapping_info( HANDLE handle, ACCESS_MASK access, unsigne
+             *full_size   = reply->size;
+             total        = reply->total;
+             info->shared_file = wine_server_ptr_handle( reply->shared_file );
++            info->aligned_file = wine_server_ptr_handle( reply->aligned_file );
+             info->version_len = reply->ver_len;
+             info->nt_name.Length = info->nt_name.MaximumLength = reply->name_len;
+         }
+@@ -3405,6 +3413,7 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
+ {
+     int unix_fd = -1, needs_close;
+     int shared_fd = -1, shared_needs_close = 0;
++    int aligned_fd = -1, aligned_needs_close = 0;
+     SIZE_T size = pe_mapping->image.map_size;
+     struct file_view *view;
+     unsigned int status;
+@@ -3424,6 +3433,12 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
+         return status;
+     }
+ 
++    /* not fatal: unaligned sections are then read in instead */
++    if (pe_mapping->aligned_file &&
++        server_get_unix_fd( pe_mapping->aligned_file, FILE_READ_DATA,
++                            &aligned_fd, &aligned_needs_close, NULL, NULL ))
++        aligned_fd = -1;
++
+     if (!pe_mapping->image.map_addr &&
+         (pe_mapping->image.image_charact & IMAGE_FILE_DLL) &&
+         (pe_mapping->image.image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated))
+@@ -3442,7 +3457,7 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
+     if (status) goto done;
+ 
+     status = map_image_into_view( view, &pe_mapping->nt_name, unix_fd, &pe_mapping->image,
+-                                  machine, shared_fd, needs_close );
++                                  machine, shared_fd, aligned_fd, needs_close );
+     if (status == STATUS_SUCCESS)
+     {
+         if (offset)
+@@ -3477,6 +3492,7 @@ done:
+     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+     if (needs_close) close( unix_fd );
+     if (shared_needs_close) close( shared_fd );
++    if (aligned_needs_close) close( aligned_fd );
+     return status;
+ }
+ 
+diff --git include/wine/server_protocol.h include/wine/server_protocol.h
+index 6f30cf0..aea07b3 100644
+--- include/wine/server_protocol.h
++++ include/wine/server_protocol.h
+@@ -2255,6 +2255,7 @@ struct get_mapping_info_reply
+     mem_size_t   size;
+     unsigned int flags;
+     obj_handle_t shared_file;
++    obj_handle_t aligned_file;
+     data_size_t  name_len;
+     data_size_t  ver_len;
+     data_size_t  total;
+@@ -2262,7 +2263,6 @@ struct get_mapping_info_reply
+     /* VARARG(version,version_res,ver_len); */
+     /* VARARG(name,unicode_str,name_len); */
+     /* VARARG(exp_name,string); */
+-    char __pad_36[4];
+ };
+ 
+ 
+@@ -7183,6 +7183,6 @@ union generic_reply
+     struct alpc_create_port_reply alpc_create_port_reply;
+ };
+ 
+-#define SERVER_PROTOCOL_VERSION 961
++#define SERVER_PROTOCOL_VERSION 962
+ 
+ #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
+diff --git server/mapping.c server/mapping.c
+index b2571d5..864e6ea 100644
+--- server/mapping.c
++++ server/mapping.c
+@@ -90,6 +90,7 @@ static const struct object_ops shared_map_ops =
+ };
+ 
+ static struct list shared_map_list = LIST_INIT( shared_map_list );
++static struct list aligned_map_list = LIST_INIT( aligned_map_list );
+ 
+ /* memory view mapped in client address space */
+ struct memory_view
+@@ -98,6 +99,7 @@ struct memory_view
+     struct fd      *fd;              /* fd for mapped file */
+     struct ranges  *committed;       /* list of committed ranges in this mapping */
+     struct shared_map *shared;       /* temp file for shared PE mapping */
++    struct shared_map *aligned;      /* temp file for page-aligned PE sections */
+     struct pe_image_info image;      /* image info (for PE image mapping) */
+     unsigned int    flags;           /* SEC_* flags */
+     client_ptr_t    base;            /* view base address (in process addr space) */
+@@ -131,6 +133,7 @@ struct mapping
+     struct pe_image_info image;      /* image info (for PE image mapping) */
+     struct ranges       *committed;  /* list of committed ranges in this mapping */
+     struct shared_map   *shared;     /* temp file for shared PE mapping */
++    struct shared_map   *aligned;    /* temp file for page-aligned PE sections */
+     char                *exp_name;   /* export name (for PE image mapping) */
+     void                *ver_res;    /* version resource (for PE image mapping) */
+     data_size_t          exp_len;    /* length of export name (for PE image mapping) */
+@@ -446,6 +449,7 @@ static void free_memory_view( struct memory_view *view )
+     if (view->fd) release_object( view->fd );
+     if (view->committed) release_object( view->committed );
+     if (view->shared) release_object( view->shared );
++    if (view->aligned) release_object( view->aligned );
+     list_remove( &view->entry );
+     free( view );
+ }
+@@ -460,11 +464,11 @@ void free_mapped_views( struct process *process )
+ }
+ 
+ /* find the shared PE mapping for a given mapping */
+-static struct shared_map *get_shared_file( struct fd *fd )
++static struct shared_map *get_shared_file( struct list *list, struct fd *fd )
+ {
+     struct shared_map *ptr;
+ 
+-    LIST_FOR_EACH_ENTRY( ptr, &shared_map_list, struct shared_map, entry )
++    LIST_FOR_EACH_ENTRY( ptr, list, struct shared_map, entry )
+         if (is_same_file_fd( ptr->fd, fd ))
+             return (struct shared_map *)grab_object( ptr );
+     return NULL;
+@@ -605,7 +609,7 @@ static int build_shared_mapping( struct mapping *mapping, size_t align_mask, int
+     }
+     if (!total_size) return 1;  /* nothing to do */
+ 
+-    if ((mapping->shared = get_shared_file( mapping->fd ))) return 1;
++    if ((mapping->shared = get_shared_file( &shared_map_list, mapping->fd ))) return 1;
+ 
+     /* create a temp file for the mapping */
+ 
+@@ -655,6 +659,78 @@ static int build_shared_mapping( struct mapping *mapping, size_t align_mask, int
+     return 0;
+ }
+ 
++/* check if a section's file data is too misaligned to be mapped from the PE file itself */
++static int is_section_unaligned( const IMAGE_SECTION_HEADER *sec, size_t align_mask, size_t image_size )
++{
++    size_t map_size, file_size;
++    off_t file_start;
++
++    if ((sec->Characteristics & IMAGE_SCN_MEM_SHARED) && (sec->Characteristics & IMAGE_SCN_MEM_WRITE))
++        return 0;
++    get_section_sizes( sec, align_mask, &map_size, &file_start, &file_size );
++    if (!sec->PointerToRawData || !file_size || !(file_start & host_page_mask)) return 0;
++    return sec->VirtualAddress <= image_size && map_size <= image_size - sec->VirtualAddress;
++}
++
++/* allocate and fill a temp file holding the sections that can't be mapped from the PE file
++ * at their virtual address, so that all processes share them instead of reading in a copy */
++static int build_aligned_mapping( struct mapping *mapping, size_t align_mask, int fd,
++                                  IMAGE_SECTION_HEADER *sec, unsigned int nb_sec )
++{
++    static const size_t buffer_size = 0x100000;
++    struct shared_map *aligned;
++    struct file *file;
++    unsigned int i;
++    size_t file_size, map_size, image_size = mapping->image.map_size;
++    off_t read_pos, write_pos;
++    char *buffer = NULL;
++    int aligned_fd;
++
++    if (mapping->image.image_flags & IMAGE_FLAGS_ImageMappedFlat) return 1;
++    for (i = 0; i < nb_sec; i++) if (is_section_unaligned( &sec[i], align_mask, image_size )) break;
++    if (i == nb_sec) return 1;  /* nothing to do */
++
++    if ((mapping->aligned = get_shared_file( &aligned_map_list, mapping->fd ))) return 1;
++
++    /* create a temp file laid out like the image in memory */
++
++    if ((aligned_fd = create_temp_file( image_size )) == -1) return 0;
++    if (!(file = create_file_for_fd( aligned_fd, FILE_GENERIC_READ|FILE_GENERIC_WRITE, 0 ))) return 0;
++
++    if (!(buffer = malloc( buffer_size ))) goto error;
++
++    /* copy each unaligned section's data to its virtual address */
++
++    for (i = 0; i < nb_sec; i++)
++    {
++        if (!is_section_unaligned( &sec[i], align_mask, image_size )) continue;
++        get_section_sizes( &sec[i], align_mask, &map_size, &read_pos, &file_size );
++        write_pos = sec[i].VirtualAddress;
++        while (file_size)
++        {
++            ssize_t res = pread( fd, buffer, min( file_size, buffer_size ), read_pos );
++            if (!res) break;  /* partial sector at EOF; the rest reads as zeroes */
++            if (res < 0 || pwrite( aligned_fd, buffer, res, write_pos ) != res) goto error;
++            file_size -= res;
++            read_pos += res;
++            write_pos += res;
++        }
++    }
++
++    if (!(aligned = alloc_object( &shared_map_ops ))) goto error;
++    aligned->fd = (struct fd *)grab_object( mapping->fd );
++    aligned->file = file;
++    list_add_head( &aligned_map_list, &aligned->entry );
++    mapping->aligned = aligned;
++    free( buffer );
++    return 1;
++
++ error:
++    release_object( file );
++    free( buffer );
++    return 0;
++}
++
+ /* load a data directory header from its section */
+ static int load_data_dir( void *dir, size_t dir_size, size_t va, size_t size, size_t align_mask,
+                           int unix_fd, IMAGE_SECTION_HEADER *sec, unsigned int nb_sec )
+@@ -1022,6 +1098,10 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
+     if (build_shared_mapping( mapping, align_mask, unix_fd, sec, nt.FileHeader.NumberOfSections ))
+         ret = STATUS_SUCCESS;
+ 
++    /* not fatal: without the copy, the client reads those sections in by itself */
++    if (!ret && !build_aligned_mapping( mapping, align_mask, unix_fd, sec, nt.FileHeader.NumberOfSections ))
++        clear_error();
++
+ done:
+     free( sec );
+     return ret;
+@@ -1074,6 +1154,7 @@ static bool mapping_init( struct object *obj, const void *init_data )
+     mapping->flags       = data->flags;
+     mapping->fd          = NULL;
+     mapping->shared      = NULL;
++    mapping->aligned     = NULL;
+     mapping->committed   = NULL;
+     mapping->exp_name    = NULL;
+     mapping->ver_res     = NULL;
+@@ -1147,6 +1228,7 @@ static bool mapping_init( struct object *obj, const void *init_data )
+     if (mapping->fd) release_object( mapping->fd );
+     if (mapping->committed) release_object( mapping->committed );
+     if (mapping->shared) release_object( mapping->shared );
++    if (mapping->aligned) release_object( mapping->aligned );
+     return false;
+ }
+ 
+@@ -1250,6 +1332,7 @@ static void mapping_destroy( struct object *obj )
+     if (mapping->fd) release_object( mapping->fd );
+     if (mapping->committed) release_object( mapping->committed );
+     if (mapping->shared) release_object( mapping->shared );
++    if (mapping->aligned) release_object( mapping->aligned );
+     free( mapping->exp_name );
+     free( mapping->ver_res );
+ }
+@@ -1583,6 +1666,8 @@ DECL_HANDLER(get_mapping_info)
+     if (mapping->shared)
+         reply->shared_file = alloc_handle( current->process, mapping->shared->file,
+                                            GENERIC_READ|GENERIC_WRITE, 0 );
++    if (mapping->aligned)
++        reply->aligned_file = alloc_handle( current->process, mapping->aligned->file, GENERIC_READ, 0 );
+     release_object( mapping );
+ }
+ 
+@@ -1637,6 +1722,7 @@ DECL_HANDLER(map_view)
+         view->fd        = !is_fd_removable( mapping->fd ) ? (struct fd *)grab_object( mapping->fd ) : NULL;
+         view->committed = mapping->committed ? (struct ranges *)grab_object( mapping->committed ) : NULL;
+         view->shared    = NULL;
++        view->aligned   = NULL;
+         add_process_view( current, view );
+     }
+ 
+@@ -1674,6 +1760,7 @@ DECL_HANDLER(map_image_view)
+         view->fd        = !is_fd_removable( mapping->fd ) ? (struct fd *)grab_object( mapping->fd ) : NULL;
+         view->committed = NULL;
+         view->shared    = mapping->shared ? (struct shared_map *)grab_object( mapping->shared ) : NULL;
++        view->aligned   = mapping->aligned ? (struct shared_map *)grab_object( mapping->aligned ) : NULL;
+         view->image     = mapping->image;
+         if (add_process_view( current, view ))
+         {
+diff --git server/protocol.def server/protocol.def
+index a9be0a1..d9403e2 100644
+--- server/protocol.def
++++ server/protocol.def
+@@ -1866,6 +1866,7 @@ enum server_fd_type
+     mem_size_t   size;          /* mapping size */
+     unsigned int flags;         /* SEC_* flags */
+     obj_handle_t shared_file;   /* shared mapping file handle */
++    obj_handle_t aligned_file;  /* page-aligned sections file handle */
+     data_size_t  name_len;      /* length of file name  */
+     data_size_t  ver_len;       /* length of version resource  */
+     data_size_t  total;         /* total required buffer size in bytes */
+diff --git server/request_handlers.h server/request_handlers.h
+index e73242d..91010fb 100644
+--- server/request_handlers.h
++++ server/request_handlers.h
+@@ -1101,9 +1101,10 @@ C_ASSERT( sizeof(struct get_mapping_info_request) == 24 );
+ C_ASSERT( offsetof(struct get_mapping_info_reply, size) == 8 );
+ C_ASSERT( offsetof(struct get_mapping_info_reply, flags) == 16 );
+ C_ASSERT( offsetof(struct get_mapping_info_reply, shared_file) == 20 );
+-C_ASSERT( offsetof(struct get_mapping_info_reply, name_len) == 24 );
+-C_ASSERT( offsetof(struct get_mapping_info_reply, ver_len) == 28 );
+-C_ASSERT( offsetof(struct get_mapping_info_reply, total) == 32 );
++C_ASSERT( offsetof(struct get_mapping_info_reply, aligned_file) == 24 );
++C_ASSERT( offsetof(struct get_mapping_info_reply, name_len) == 28 );
++C_ASSERT( offsetof(struct get_mapping_info_reply, ver_len) == 32 );
++C_ASSERT( offsetof(struct get_mapping_info_reply, total) == 36 );
+ C_ASSERT( sizeof(struct get_mapping_info_reply) == 40 );
+ C_ASSERT( offsetof(struct get_image_map_address_request, handle) == 12 );
+ C_ASSERT( sizeof(struct get_image_map_address_request) == 16 );
+diff --git server/request_trace.h server/request_trace.h
+index 9c7518e..589c512 100644
+--- server/request_trace.h
++++ server/request_trace.h
+@@ -889,6 +889,7 @@ static void dump_get_mapping_info_reply( const struct get_mapping_info_reply *re
+     dump_uint64( " size=", &req->size );
+     fprintf( stderr, ", flags=%08x", req->flags );
+     fprintf( stderr, ", shared_file=%04x", req->shared_file );
++    fprintf( stderr, ", aligned_file=%04x", req->aligned_file );
+     fprintf( stderr, ", name_len=%u", req->name_len );
+     fprintf( stderr, ", ver_len=%u", req->ver_len );
+     fprintf( stderr, ", total=%u", req->total );

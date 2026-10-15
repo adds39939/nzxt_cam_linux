@@ -1,7 +1,7 @@
 # Build the Flatpak, and the single-file bundle around it.
 #
-# Everything this project ships is built here from source: Wine with the twenty
-# patches applied, the three small Windows tools, and the scripts around them. That is
+# Everything this project ships is built here from source: Wine with the patches
+# applied, the three small Windows tools, and the scripts around them. That is
 # also what makes the LGPL side of it honest -- the manifest plus patches/ IS the
 # corresponding source for the Wine binaries in the bundle.
 #
